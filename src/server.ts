@@ -1,5 +1,6 @@
 import fastify from "fastify";
-import { healthRoutes } from "./routes/health";
+import { healthRoutes } from "./routes/health.js";
+import { env } from "./config/env.js";
 
 export function buildServer() {
     const app = fastify({
@@ -11,7 +12,7 @@ export function buildServer() {
 
 
 const server = buildServer();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = env.PORT;
 const HOST = "0.0.0.0";
 
 async function start() {

@@ -5,20 +5,21 @@ import { IntentDecisionSchema } from "./schemas/intent.js";
 import { retrieveCommunity, retrieveMedical } from "./tools.js";
 import { llm } from "../infra/llm.js";
 
+export async function extractQuery(state: AgentStateType) {
+  const lastUserMessage = [...state.messages]
+    .reverse()
+    .find((m) => m instanceof HumanMessage);
+  if (!lastUserMessage) return { query: "" };
 
-export async function extractQuery(state:AgentStateType) {
-    const lastUserMessage = [...state.messages].reverse().find((m) => m instanceof HumanMessage);
-    if (!lastUserMessage) return { query: "" };
-
-    return {
-        query: lastUserMessage.content.toString(),
-    };
+  return {
+    query: lastUserMessage.content.toString(),
+  };
 }
 
-export async function decideIntentAndRetrieval(state:AgentStateType) {
-    const structuredLLM = llm.withStructuredOutput(IntentDecisionSchema);
-    const response = await structuredLLM.invoke([
-        new SystemMessage(`
+export async function decideIntentAndRetrieval(state: AgentStateType) {
+  const structuredLLM = llm.withStructuredOutput(IntentDecisionSchema);
+  const response = await structuredLLM.invoke([
+    new SystemMessage(`
             You are an assistant for a cancer-support platform.
 
             Your task is to decide:
@@ -33,30 +34,30 @@ export async function decideIntentAndRetrieval(state:AgentStateType) {
             - Mark riskLevel as "medium" if there is uncertainty or anxiety
             - Otherwise mark it as "low"
             `),
-            new HumanMessage(state.query),
-    ]);
-    const decision = "parsed" in response ? response.parsed : response;
-    return {
-        useCommunity: decision.useCommunity,
-        useMedical: decision.useMedical,
-        riskLevel: decision.riskLevel,
-    }
+    new HumanMessage(state.query),
+  ]);
+  const decision = "parsed" in response ? response.parsed : response;
+  return {
+    useCommunity: decision.useCommunity,
+    useMedical: decision.useMedical,
+    riskLevel: decision.riskLevel,
+  };
 }
 
-export async function retrieveCommunityNode(state:AgentStateType) {
-    const result = await retrieveCommunity(state.query);
-    return {
-        communtiyContext: result,
-    };
+export async function retrieveCommunityNode(state: AgentStateType) {
+  const result = await retrieveCommunity(state.query);
+  return {
+    communtiyContext: result,
+  };
 }
 
-export async function retrieveMedicalNode(state:AgentStateType) {
-    const result = await retrieveMedical(state.query);
-    return {
-        medicalContext: result,
-    };
+export async function retrieveMedicalNode(state: AgentStateType) {
+  const result = await retrieveMedical(state.query);
+  return {
+    medicalContext: result,
+  };
 }
 
 export function fanOutRetrieval() {
-    return {};
+  return {};
 }
