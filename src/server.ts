@@ -20,7 +20,7 @@ async function start() {
         await server.listen({port: PORT, host: HOST});
         console.log(`Server listening on ${HOST}:${PORT}`);
     } catch (error) {
-        console.log(`Server listening on ${HOST}:${PORT}`);
+        console.log(error);
         process.exit(1);
     }
 }

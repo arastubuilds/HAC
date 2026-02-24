@@ -1,22 +1,24 @@
 import { StateGraph, START, END } from "@langchain/langgraph";
-import { AgentState } from "../utils/state.js";
+import { AgentState } from "./utils/state.js";
 import {
-  extractQuery,
-  decideIntentAndRetrieval,
+  extractQueryNode,
+  decideIntentAndRetrievalNode,
   retrieveCommunityNode,
   retrieveMedicalNode,
-  fanOutRetrieval,
-} from "../utils/nodes.js";
-import { retrievalRouter } from "../utils/router.js";
+  fanOutRetrievalNode,
+  generateAnswerNode,
+} from "./utils/nodes.js";
+import { retrievalRouter } from "./utils/router.js";
 
 export const cancerSupportGraph = new StateGraph(AgentState);
 
 cancerSupportGraph
-  .addNode("extractQuery", extractQuery)
-  .addNode("decideIntent", decideIntentAndRetrieval)
+  .addNode("extractQuery", extractQueryNode)
+  .addNode("decideIntent", decideIntentAndRetrievalNode)
   .addNode("retrieveCommunity", retrieveCommunityNode)
   .addNode("retrieveMedical", retrieveMedicalNode)
-  .addNode("fanOutRetrieval", fanOutRetrieval)
+  .addNode("fanOutRetrieval", fanOutRetrievalNode)
+  .addNode("generateAnswer", generateAnswerNode)
   .addEdge(START, "extractQuery")
   .addEdge("extractQuery", "decideIntent")
   .addConditionalEdges("decideIntent", retrievalRouter, {
@@ -27,5 +29,8 @@ cancerSupportGraph
   })
   .addEdge("fanOutRetrieval", "retrieveCommunity")
   .addEdge("fanOutRetrieval", "retrieveMedical")
-  .addEdge("retrieveCommunity", END)
-  .addEdge("retrieveMedical", END);
+  .addEdge("retrieveCommunity", "generateAnswer")
+  .addEdge("retrieveMedical", "generateAnswer")
+  .addEdge("generateAnswer", END);
+
+  export const cancerSupportAgent = cancerSupportGraph.compile();
