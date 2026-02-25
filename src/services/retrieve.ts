@@ -1,5 +1,5 @@
-import { pineconeIndex } from "../../infra/pinecone.js";
-import { embeddingsModel } from "../../infra/embeddings.js";
+import { pineconeIndex } from "../infra/pinecone.js";
+import { embeddingsModel } from "../infra/embeddings.js";
 
 export async function retrieveFromNamespace(
   query: string,

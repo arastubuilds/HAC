@@ -5,7 +5,7 @@ import { SystemMessage, HumanMessage, ContentBlock } from "@langchain/core/messa
 import { AgentStateType } from "./state.js";
 import { IntentDecisionSchema } from "./schemas/intent.js";
 import { llm } from "../../infra/llm.js";
-import { retrieveFromNamespace } from "../services/retrieve.js";
+import { retrieveFromNamespace } from "../../services/retrieve.js";
 
 
 export async function extractQueryNode(state: AgentStateType) {

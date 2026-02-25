@@ -1,6 +1,6 @@
-import { pineconeIndex } from "../../infra/pinecone.js";
-import { embeddingsModel } from "../../infra/embeddings.js";
-import { splitter } from "../../infra/embeddings.js";
+import { pineconeIndex } from "../infra/pinecone.js";
+import { embeddingsModel } from "../infra/embeddings.js";
+import { splitter } from "../infra/embeddings.js";
 import { v4 as uuidv4 } from "uuid";
 
 export async function ingestText(
