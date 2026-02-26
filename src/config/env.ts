@@ -23,7 +23,8 @@ const envSchema = z.object({
     GOOGLE_API_KEY: z.string().min(1, "GOOGLE_API_KEY is required"),
     PINECONE_API_KEY: z.string().min(1, "PINECONE_API_KEY is required"),
     PINECONE_INDEX: z.string().min(1, "PINECONE_INDEX is required"),
-    HUGGING_FACE_API_KEY: z.string().min(1, "HUGGING_FACE_API_KEY is required")
+    HUGGING_FACE_API_KEY: z.string().min(1, "HUGGING_FACE_API_KEY is required"),
+    DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 });
 
 const parsed = envSchema.safeParse(process.env);
