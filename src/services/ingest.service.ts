@@ -1,12 +1,18 @@
 import { pineconeIndex } from "../infra/pinecone.js";
 import { embeddingsModel } from "../infra/embeddings.js";
 import { splitter } from "../infra/embeddings.js";
-import { v4 as uuidv4 } from "uuid";
+// import { v4 as uuidv4 } from "uuid";
+
+type IngestMetadata = {
+  source : string;
+  postId? : string;
+  createdAt? : string;
+};
 
 export async function ingestText(
   text: string,
   namespace: "community" | "medical",
-  metadata: Record<"source", string>
+  metadata: IngestMetadata
 ) {
   const docs = await splitter.createDocuments([text]);
 
@@ -23,10 +29,11 @@ export async function ingestText(
   }
 
   const records = vectors.map((values, i) => ({
-    id: uuidv4(),
+    id: metadata.postId ? `${metadata.postId}_${i}` : crypto.randomUUID(),
     values,
     metadata: {
       ...metadata,
+      chunkIndex: i,
       text: texts[i] ?? "",
     },
   }));
@@ -36,5 +43,18 @@ export async function ingestText(
     namespace,
   });
 
-  console.log("Upserted:", records.length);
+  console.log(`Upserted ${records.length} vectors into ${namespace}`);
+}
+
+export async function deletePostVectors(
+  namespace: "community" | "medical",
+  postId: string
+) {
+  await pineconeIndex.deleteMany({
+    namespace,
+    filter: {
+      postId: { $eq : postId },
+    },
+  });
+  console.log(`Deleted vectors for post ${postId}`);
 }

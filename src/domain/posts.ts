@@ -9,3 +9,8 @@ export type CreatePostInput = {
     title: string;
     content: string;
 };
+
+export type UpdatePostInput = {
+    postId: string;
+    original:  CreatePostInput;
+};

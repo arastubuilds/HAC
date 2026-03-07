@@ -1,12 +1,28 @@
-import fastify from "fastify";
-import { healthRoutes } from "./routes/health.js";
+import fastify, { FastifyError } from "fastify";
+import { healthRoutes } from "./routes/health.route.js";
+import { postsRoutes } from "./routes/posts.route.js";
 import { env } from "./config/env.js";
 
 export function buildServer() {
     const app = fastify({
         trustProxy: true,       // importand behind load balancers
     });
+
+    app.setErrorHandler((error: FastifyError, request, reply) => {
+        request.log.error(error);
+        if (error.validation) {
+            return reply.status(400).send({
+                error: "Validation failed",
+                details: error.validation,
+            });
+        }
+        return reply.status(500).send({
+            error: error.message,
+        });
+    })
+
     app.register(healthRoutes, {prefix: "/health"});
+    app.register(postsRoutes, {prefix: "/posts"});
     return app;
 }
 

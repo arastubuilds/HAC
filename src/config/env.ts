@@ -20,6 +20,7 @@ const envSchema = z.object({
             return parsed;
         })
     ,
+    REDIS_URL: z.string().default("redis://localhost:6379"),
     GOOGLE_API_KEY: z.string().min(1, "GOOGLE_API_KEY is required"),
     PINECONE_API_KEY: z.string().min(1, "PINECONE_API_KEY is required"),
     PINECONE_INDEX: z.string().min(1, "PINECONE_INDEX is required"),
