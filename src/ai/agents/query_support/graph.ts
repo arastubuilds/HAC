@@ -1,5 +1,5 @@
 import { StateGraph, START, END } from "@langchain/langgraph";
-import { AgentState } from "./utils/state.js";
+import { AgentState } from "./state.js";
 import {
   extractQueryNode,
   decideIntentAndRetrievalNode,
@@ -7,8 +7,8 @@ import {
   retrieveMedicalNode,
   fanOutRetrievalNode,
   generateAnswerNode,
-} from "./utils/nodes.js";
-import { retrievalRouter } from "./utils/router.js";
+} from "./nodes.js";
+import { retrievalRouter } from "./router.js";
 
 export const cancerSupportGraph = new StateGraph(AgentState);
 

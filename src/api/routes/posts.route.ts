@@ -5,5 +5,4 @@ export async function postsRoutes(app: FastifyInstance) {
   app.post("/", createPostHandler);
   app.put("/:postId", updatePostHandler);
   app.delete("/:postId", deletePostHandler);
-
 }

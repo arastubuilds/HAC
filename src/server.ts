@@ -1,6 +1,6 @@
 import fastify, { FastifyError } from "fastify";
-import { healthRoutes } from "./routes/health.route.js";
-import { postsRoutes } from "./routes/posts.route.js";
+import { healthRoutes } from "./api/routes/health.route.js";
+import { postsRoutes } from "./api/routes/posts.route.js";
 import { env } from "./config/env.js";
 
 export function buildServer() {

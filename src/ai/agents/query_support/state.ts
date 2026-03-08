@@ -12,7 +12,7 @@ export const AgentState = new StateSchema({
     // Track how many LLM calls were made
     llmCalls: new ReducedValue(
         z.number().default(0),
-        { reducer: (x, y) => x + y}
+        { reducer: (x: number, y: number) => x + y}
     ),
 
     // Current extracted query

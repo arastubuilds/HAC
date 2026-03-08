@@ -1,8 +1,8 @@
 import { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { createPost, deletePost, updatePost } from "../services/posts.service.js";
-import { Post, UpdatePostInput } from "../domain/posts.js";
+import { createPost, deletePost, updatePost } from "../../services/posts.service.js";
+import { Post, UpdatePostInput } from "../../domain/posts.js";
 import { CreatePostDTO, DeletePostDTO, PostResponse, UpdatePostDTO, UpdatePostParmasDTO } from "../dtos/posts.dto.js";
 
 export async function createPostHandler(

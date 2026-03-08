@@ -3,9 +3,9 @@ import { SystemMessage, HumanMessage, ContentBlock } from "@langchain/core/messa
 // import { GraphNode } from "@langchain/langgraph";
 
 import { AgentStateType } from "./state.js";
-import { IntentDecisionSchema } from "./schemas/intent.js";
-import { llm } from "../../infra/llm.js";
-import { retrieveFromNamespace } from "../../services/retrieve.js";
+import { IntentDecisionSchema } from "../../schemas/intent.js";
+import { llm } from "../../../infra/llm.js";
+import { retrieveFromNamespace } from "../../../services/retrieve.service.js";
 
 
 export async function extractQueryNode(state: AgentStateType) {

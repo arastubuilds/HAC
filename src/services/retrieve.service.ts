@@ -1,6 +1,24 @@
 import { pineconeIndex } from "../infra/pinecone.js";
 import { embeddingsModel } from "../infra/embeddings.js";
 
+
+export async function retrieveCommunityPosts(query:string) {
+  const queryEmbedding = await embeddingsModel.embedQuery(query);
+  const results = await pineconeIndex.query({
+    namespace: "community",
+    vector: queryEmbedding,
+    topK: 20,
+    includeMetadata: true,
+  });
+
+  return results.matches?.map((m) => {
+    text: m.metadata?.text,
+    postId: m.metadata?.postId,
+    
+  })
+}
+
+
 export async function retrieveFromNamespace(
   query: string,
   namespace: "community" | "medical",
