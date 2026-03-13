@@ -1,7 +1,7 @@
 import { embeddingsModel } from "../../../infra/embeddings.js";
 import { pineconeIndex } from "../../../infra/pinecone.js";
 
-import { RetrievalChunk } from "../retrieval.types.js";
+import { RetrievalChunk } from "../types/retrieval.types.js";
 import { Retriever } from "./retriever.interface.js";
 
 import { asNumber, asString } from "../utils/metadata.js";

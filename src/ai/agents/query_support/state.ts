@@ -3,7 +3,11 @@ import {
     MessagesValue,
     ReducedValue,
 } from "@langchain/langgraph";
+
 import { z } from "zod";
+
+import { RetrievalChunk } from "../../retrieval/types/retrieval.types.js";
+import { Citation } from "../../retrieval/types/citation.types.js";
 
 export const AgentState = new StateSchema({
     // conversation history
@@ -15,16 +19,24 @@ export const AgentState = new StateSchema({
         { reducer: (x: number, y: number) => x + y}
     ),
 
-    // Current extracted query
+    // original user intent
     query: z.string().default(""),
 
+    // optimized retireval query
+    searchQuery: z.string().optional(),
     // Retrieved contexts
-    communityContext: z.string().optional(),
-    medicalContext: z.string().optional(),
+    // communityContext: z.string().optional(),
+    // medicalContext: z.string().optional(),
+
+    retrievedChunks: z.custom<RetrievalChunk[]>().optional(),
+    context: z.string().optional(),
+    citations: z.custom<Citation[]>().optional(),
+
+    route: z.enum(["community", "medical", "both", "none"]).optional(),
 
     // Routing flags,
-    useCommunity: z.boolean().default(false),
-    useMedical: z.boolean().default(false),
+    // useCommunity: z.boolean().default(false),
+    // useMedical: z.boolean().default(false),
 
     // safety signal
     riskLevel: z.enum(["low", "medium", "high"]).default("low"),

@@ -1,6 +1,6 @@
 import { Pinecone } from "@pinecone-database/pinecone";
 // import { PineconeStore } from "@langchain/pinecone";
-import { embeddingsModel } from "./embeddings.js";
+// import { embeddingsModel } from "./embeddings.js";
 import { env } from "../config/env.js";
 
 
