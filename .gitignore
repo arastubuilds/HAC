@@ -30,3 +30,6 @@ migrations
 *.sln
 *.sw?
 
+PLAN.md
+CLAUDE.md
+.claude
