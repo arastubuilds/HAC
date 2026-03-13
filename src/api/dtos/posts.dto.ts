@@ -18,7 +18,7 @@ export const DeletePostDTO = z.object({
   postId: z.uuid(),
 });
 
-export type DeletePostInput = z.infer<typeof DeletePostDTO>;
+export type DeletePostInput = z.infer<typeof DeletePostDTO> & { requestingUserId: string };
 export type CreatePostInput = z.infer<typeof CreatePostDTO>;
 
 export type PostResponse = {
@@ -26,4 +26,5 @@ export type PostResponse = {
     title: string;
     content: string;
     createdAt: string; // ISO string for APIs
+    userId: string;
 };

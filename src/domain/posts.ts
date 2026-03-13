@@ -3,14 +3,17 @@ export type Post = {
     title: string;
     content: string;
     createdAt: Date;
+    userId: string;
 };
 
 export type CreatePostInput = {
     title: string;
     content: string;
+    userId: string;
 };
 
 export type UpdatePostInput = {
     postId: string;
-    original:  CreatePostInput;
+    original: { title: string; content: string };
+    requestingUserId: string;
 };

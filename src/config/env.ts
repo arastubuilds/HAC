@@ -20,6 +20,7 @@ const envSchema = z.object({
             return parsed;
         })
     ,
+    JWT_SECRET: z.string().min(32, "JWT_SECRET should be 32 chars long"),
     REDIS_URL: z.string().default("redis://localhost:6379"),
     GOOGLE_API_KEY: z.string().min(1, "GOOGLE_API_KEY is required"),
     PINECONE_API_KEY: z.string().min(1, "PINECONE_API_KEY is required"),

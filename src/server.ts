@@ -1,6 +1,9 @@
 import fastify, { FastifyError } from "fastify";
 import { healthRoutes } from "./api/routes/health.route.js";
 import { postsRoutes } from "./api/routes/posts.route.js";
+import { queryRoutes } from "./api/routes/query.route.js";
+import { authRoutes } from "./api/routes/auth.route.js";
+import jwtPlugin from "./plugins/jwt.plugin.js";
 import { env } from "./config/env.js";
 
 export function buildServer() {
@@ -21,8 +24,11 @@ export function buildServer() {
         });
     })
 
+    app.register(jwtPlugin);
     app.register(healthRoutes, {prefix: "/health"});
-    app.register(postsRoutes, {prefix: "/posts"});
+    app.register(authRoutes,   {prefix: "/auth"});
+    app.register(postsRoutes,  {prefix: "/posts"});
+    app.register(queryRoutes,  {prefix: "/query"});
     return app;
 }
 

@@ -1,8 +1,13 @@
 import { FastifyInstance } from "fastify";
-import { createPostHandler, deletePostHandler, updatePostHandler } from "../controllers/posts.controller.js";
+import { createPostHandler, deletePostHandler, getPostHandler, listPostsHandler, updatePostHandler } from "../controllers/posts.controller.js";
+import { authenticate } from "../middleware/authenticate.middleware.js";
 
 export async function postsRoutes(app: FastifyInstance) {
-  app.post("/", createPostHandler);
-  app.put("/:postId", updatePostHandler);
-  app.delete("/:postId", deletePostHandler);
+  // Public
+  app.get("/", listPostsHandler);
+  app.get("/:postId", getPostHandler);
+  // Protected
+  app.post("/", { preHandler: authenticate }, createPostHandler);
+  app.put("/:postId", { preHandler: authenticate }, updatePostHandler);
+  app.delete("/:postId", { preHandler: authenticate }, deletePostHandler);
 }
