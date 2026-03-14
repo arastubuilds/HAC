@@ -15,6 +15,7 @@ model User {
   createdAt DateTime  @default(now())
   posts     Post[]
   accounts  Account[]
+  replies   Reply[]
 
   @@index([email])
   @@index([username])
@@ -44,7 +45,22 @@ model Post {
   createdAt DateTime @default(now())
   userId    String
   user      User     @relation(fields: [userId], references: [id])
+  replies   Reply[]
 
   @@index([createdAt])
   @@index([userId])
+}
+
+model Reply {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([userId])
+  @@index([createdAt])
 }

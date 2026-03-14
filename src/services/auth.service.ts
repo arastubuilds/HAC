@@ -2,38 +2,44 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../infra/prisma.js";
 import type { User, CreateUserInput } from "../domain/users.js";
 
+import { Prisma } from "@prisma/client";
+
 export async function registerUser(input: CreateUserInput): Promise<User> {
-  const [existingEmail, existingUsername] = await Promise.all([
-    prisma.user.findUnique({ where: { email: input.email } }),
-    prisma.user.findUnique({ where: { username: input.username } }),
-  ]);
-
-  if (existingEmail) throw new Error("EMAIL_TAKEN");
-  if (existingUsername) throw new Error("USERNAME_TAKEN");
-
   const passwordHash = await bcrypt.hash(input.password, 12);
 
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({
-      data: {
-        email: input.email,
-        username: input.username,
-        firstName: input.firstName ?? null,
-        lastName: input.lastName ?? null,
-      },
-    });
-    await tx.account.create({
-      data: {
-        userId: created.id,
-        provider: "local",
-        providerAccountId: created.id,
-        passwordHash,
-      },
-    });
-    return created;
-  });
+  try {
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email: input.email,
+          username: input.username,
+          firstName: input.firstName ?? null,
+          lastName: input.lastName ?? null,
+        },
+      });
 
-  return user;
+      await tx.account.create({
+        data: {
+          userId: created.id,
+          provider: "local",
+          providerAccountId: created.id,
+          passwordHash,
+        },
+      });
+
+      return created;
+    });
+
+    return user;
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new Error("EMAIL_OR_USERNAME_TAKEN", {cause: error});
+    }
+    throw error;
+  }
 }
 
 export async function verifyCredentials(

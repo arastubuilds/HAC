@@ -20,7 +20,13 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
                 title: chunk.title ?? "",
             }
             citations.push(citation);
-            return `[${currIndex}] ${chunk.title ?? "Source"}\n${chunk.text}`;
+            return `
+            SOURCE [${currIndex}]
+            type: ${chunk.source}
+            title: ${chunk.title ?? "Unknown"}
+            content:
+            ${chunk.text}
+            `.trim();
         })
         .join("\n\n");
     }
@@ -28,11 +34,15 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
     const medicalSection = buildSection(medical);
     const communitySection = buildSection(community);
 
-    const parts: string[] = [];
-    if (medical.length > 0) parts.push(`Medical Information:\n\n${medicalSection}`);
-    if (community.length > 0) parts.push(`Community Information:\n\n${communitySection}`);
+    const context = `
+    Medical Information:
 
-    const context = parts.join("\n\n");
+    ${medicalSection}
+
+    Community Information:
+
+    ${communitySection}
+    `.trim();
 
     return {
         context,

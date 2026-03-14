@@ -7,7 +7,7 @@ import { IntentDecisionSchema } from "./schemas/intent.js";
 import { llm } from "../../../infra/llm.js";
 import { RetrievalManager } from "../../retrieval/retrievers/retrieval.manager.js";
 import { rankChunks } from "../../retrieval/ranking/result.ranker.js";
-import { buildContext } from "../../retrieval/context/contexBuilder.js";
+import { buildContext } from "../../retrieval/context/contextBuilder.js";
 import { inspectRetrieval } from "../../retrieval/debug/retrieval.debug.js";
 
 

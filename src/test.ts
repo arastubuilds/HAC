@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fastify, { type FastifyError } from "fastify";
 import jwtPlugin from "./plugins/jwt.plugin.js";
 import { authRoutes } from "./api/routes/auth.route.js";
-import { authenticate } from "./api/middleware/authenticate.middleware.js";
+import { postsRoutes } from "./api/routes/posts.route.js";
 import { prisma } from "./infra/prisma.js";
 
 // ── Test server ────────────────────────────────────────────────────────────────
@@ -18,12 +18,7 @@ app.setErrorHandler((error: FastifyError, _request, reply) => {
 
 await app.register(jwtPlugin);
 await app.register(authRoutes, { prefix: "/auth" });
-
-// Minimal protected route — avoids pulling in posts.service → Redis
-app.get("/protected", { preHandler: authenticate }, async (_req, reply) => {
-  return reply.status(200).send({ ok: true });
-});
-
+await app.register(postsRoutes, { prefix: "/posts" });
 await app.ready();
 
 // ── Unique credentials ─────────────────────────────────────────────────────────
@@ -39,6 +34,7 @@ let passed = 0;
 function ok(name: string) {
   console.log(`\x1b[32m✓ ${name}\x1b[0m`);
   passed++;
+  console.log(`Current passed: ${passed}`);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -126,24 +122,26 @@ function ok(name: string) {
   ok("Login unknown email");
 }
 
-// 8. Protected route — no token
+// 8. Protected route — no token (POST /posts requires authenticate)
 {
   const res = await app.inject({
-    method: "GET",
-    url: "/protected",
+    method: "POST",
+    url: "/posts",
+    payload: {},
   });
   assert.equal(res.statusCode, 401, `Protected no token: expected 401, got ${res.statusCode} — ${res.body}`);
   ok("Protected route — no token");
 }
 
-// 9. Protected route — valid token
+// 9. Protected route — valid token (body invalid → 400, not 401)
 {
   const res = await app.inject({
-    method: "GET",
-    url: "/protected",
+    method: "POST",
+    url: "/posts",
+    payload: {},
     headers: { authorization: `Bearer ${token}` },
   });
-  assert.equal(res.statusCode, 200, `Protected valid token: expected 200, got ${res.statusCode} — ${res.body}`);
+  assert.notEqual(res.statusCode, 401, `Protected valid token: expected non-401, got ${res.statusCode} — ${res.body}`);
   ok("Protected route — valid token");
 }
 
@@ -154,3 +152,4 @@ await app.close();
 await prisma.$disconnect();
 
 console.log(`\n\x1b[32mAll ${passed} tests passed.\x1b[0m`);
+

@@ -1,8 +1,13 @@
 import { RetrievalChunk } from "../types/retrieval.types.js";
 
 const SOURCE_WEIGHT = {
-  medical: 1.1,
-  community: 0.9,
+  medical:   1.1,
+  community: 1.0,
+};
+
+const TYPE_WEIGHT = {
+  post:  0.85,
+  reply: 0.90,
 };
 
 function recencyFactor(createdAt?: string): number {
@@ -23,13 +28,11 @@ export function rankChunks(
 
   const scored = chunks.map((chunk) => {
     const sourceWeight = SOURCE_WEIGHT[chunk.source];
-
-    const recency =
-      chunk.source === "community"
-        ? recencyFactor(chunk.createdAt)
-        : 1;
-
-    const finalScore = chunk.score * sourceWeight * recency;
+    const typeWeight   = chunk.source === "community"
+      ? TYPE_WEIGHT[chunk.type ?? "post"]
+      : 1;
+    const recency = chunk.source === "community" ? recencyFactor(chunk.createdAt) : 1;
+    const finalScore = chunk.score * sourceWeight * typeWeight * recency;
 
     return {
       ...chunk,
@@ -45,8 +48,9 @@ export function rankChunks(
   const unique: RetrievalChunk[] = [];
 
   for (const chunk of scored) {
-    if (!seenDocs.has(chunk.sourceId)) {
-      seenDocs.add(chunk.sourceId);
+    const dedupKey = chunk.replyId ?? chunk.sourceId;
+    if (!seenDocs.has(dedupKey)) {
+      seenDocs.add(dedupKey);
       unique.push(chunk);
     }
 

@@ -767,6 +767,51 @@ Existing vectors must be re-ingested (trigger an update on each post) to backfil
 
 ---
 
+# 30. Reply Pipeline
+
+Added full reply CRUD with async vector ingestion into the `community` Pinecone namespace alongside posts.
+
+**Schema:** `Reply` model in `prisma/schema.prisma` — `id`, `postId` (FK → Post), `userId` (FK → User), `content`, `createdAt`. Index on `postId`.
+
+**New files:**
+
+```
+src/domain/replies.ts                  — Reply type
+src/api/dtos/replies.dto.ts            — CreateReplyDTO, ListRepliesQuery
+src/services/replies.service.ts        — createReply, listReplies, deleteReply
+src/api/controllers/replies.controller.ts
+src/api/routes/replies.route.ts        — nested under /posts/:postId/replies
+src/queues/replyIngest.queue.ts        — BullMQ queue (replyIngest)
+src/workers/replyIngest.worker.ts      — create: embed + upsert; delete: filter-delete
+```
+
+Routes:
+
+```
+POST   /posts/:postId/replies          — JWT required
+GET    /posts/:postId/replies          — public (paginated)
+DELETE /posts/:postId/replies/:replyId — JWT + owner
+```
+
+Pinecone vectors for replies use metadata: `type: "reply"`, `replyId`, `postId`, `content`, `createdAt`. Stored in the `community` namespace.
+
+---
+
+# 31. RetrievalType — Separate Source from Content Type
+
+Introduced `RetrievalType = "post" | "reply"` to decouple content-type from namespace origin.
+
+**Changes:**
+
+- `RetrievalSource` reverted to `"community" | "medical"` — replies are community content, not a separate source
+- `RetrievalType` added to `retrieval.types.ts`; `type?: RetrievalType` field on `RetrievalChunk`
+- `Citation.source` reverted to `"community" | "medical"`
+- `CommunityRetriever` sets `source: "community"` always; `type: isReply ? "reply" : "post"` from Pinecone metadata
+- Ranker split into `SOURCE_WEIGHT` (`medical: 1.1`, `community: 1.0`) and `TYPE_WEIGHT` (`post: 0.85`, `reply: 0.90`); type weight only applies to community chunks
+- Context builder filter simplified to `chunk.source === "community"` — no `|| "reply"` hack needed
+
+---
+
 # 25. Posts API — Read Endpoints
 
 **Files modified:**

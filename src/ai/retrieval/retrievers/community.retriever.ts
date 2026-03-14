@@ -18,25 +18,36 @@ export class CommunityRetriever implements Retriever {
   
       return (
         results.matches?.flatMap((match) => {
-          const sourceId = asString(match.metadata?.postId);
+          const metaType = asString(match.metadata?.type);
+          const replyId = asString(match.metadata?.replyId);
+          const postId = asString(match.metadata?.postId);
+
+          const isReply = metaType === "reply";
+          const sourceId = isReply ? replyId : postId;
           if (!sourceId) return [];
-      
+
           const chunk: RetrievalChunk = {
             text: asString(match.metadata?.text) ?? "",
             source: "community",
+            type: isReply ? "reply" : "post",
             sourceId,
             score: asNumber(match.score) ?? 0,
           };
-      
+
+          if (isReply) {
+            if (replyId) chunk.replyId = replyId;
+            if (postId) chunk.parentPostId = postId;
+          }
+
           const title = asString(match.metadata?.title);
           if (title) chunk.title = title;
-      
+
           const createdAt = asString(match.metadata?.createdAt);
           if (createdAt) chunk.createdAt = createdAt;
-      
+
           const chunkIndex = asNumber(match.metadata?.chunkIndex);
           if (chunkIndex !== undefined) chunk.chunkIndex = chunkIndex;
-      
+
           return [chunk];
         }) ?? []
       );

@@ -4,10 +4,13 @@ import { splitter } from "../infra/embeddings.js";
 // import { v4 as uuidv4 } from "uuid";
 
 type IngestMetadata = {
-  source : string;
-  postId? : string;
+  source: string;
+  postId?: string;
+  replyId?: string;
+  userId?: string;
   title?: string;
-  createdAt? : string;
+  createdAt?: string;
+  type?: string;
 };
 
 export async function ingestText(
@@ -30,7 +33,11 @@ export async function ingestText(
   }
 
   const records = vectors.map((values, i) => ({
-    id: metadata.postId ? `${metadata.postId}_${i}` : crypto.randomUUID(),
+    id: metadata.replyId
+      ? `reply_${metadata.replyId}_chunk_${i}`
+      : metadata.postId
+        ? `${metadata.postId}_${i}`
+        : crypto.randomUUID(),
     values,
     metadata: {
       ...metadata,
@@ -58,4 +65,17 @@ export async function deletePostVectors(
     },
   });
   console.log(`Deleted vectors for post ${postId}`);
+}
+
+export async function deleteReplyVectors(
+  namespace: "community" | "medical",
+  replyId: string
+) {
+  await pineconeIndex.deleteMany({
+    namespace,
+    filter: {
+      replyId: { $eq: replyId },
+    },
+  });
+  console.log(`Deleted vectors for reply ${replyId}`);
 }
