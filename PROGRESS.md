@@ -717,6 +717,56 @@ POST   /query             — JWT required
 
 ---
 
+# 27. Auth Integration Tests — `src/test.ts`
+
+Added a self-contained test script covering the full auth loop using Node's built-in `assert/strict` and Fastify `inject()` (no test framework).
+
+**Run:** `tsx src/test.ts` (requires Postgres; no Redis dependency — inline protected route avoids the posts service import chain)
+
+9 tests:
+
+```
+✓ Register success                (201 + token + user.id)
+✓ Register duplicate email        (409)
+✓ Register duplicate username     (409)
+✓ Register invalid input          (400)
+✓ Login success                   (200 + token)
+✓ Login wrong password            (401)
+✓ Login unknown email             (401)
+✓ Protected route — no token      (401)
+✓ Protected route — valid token   (200)
+```
+
+Test user is deleted from the DB after every run.
+
+---
+
+# 28. Query Rewriting — `rewriteQueryNode` Wired Into Graph
+
+**Files:** `src/ai/agents/query_support/graph.ts`, `nodes.ts`
+
+`rewriteQueryNode` was already implemented but never connected. It is now inserted between `extractQuery` and `decideIntent`:
+
+```
+extractQuery → rewriteQuery → decideIntent → retrieveContext → generateAnswer
+```
+
+`retrieveContextNode` now uses `searchQuery ?? query` for Pinecone lookup — retrieval uses the LLM-optimised search terms while intent classification and answer generation still operate on the original user phrasing.
+
+---
+
+# 29. Citation Title Bug Fix
+
+**Files:** `src/services/ingest.service.ts`, `src/workers/postIngest.worker.ts`
+
+Post titles were embedded inside the ingestion text body but never stored as a separate Pinecone metadata field. At retrieval time `match.metadata?.title` was always `undefined`, causing `contexBuilder.ts` to default `Citation.title` to `""`.
+
+**Fix:** Added `title?: string` to `IngestMetadata` and passed `title: post.title` in the `ingestText()` call. The `...metadata` spread in `ingest.service.ts` automatically writes it to every Pinecone record.
+
+Existing vectors must be re-ingested (trigger an update on each post) to backfill the title metadata.
+
+---
+
 # 25. Posts API — Read Endpoints
 
 **Files modified:**
