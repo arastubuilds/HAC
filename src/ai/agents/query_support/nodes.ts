@@ -147,13 +147,13 @@ export async function retrieveContextNode(
   state: AgentStateType
 ): Promise<Partial<AgentStateType>> {
 
-  const { query, route } = state;
+  const { query, searchQuery, route } = state;
 
   if (!query || !route || route === "none") {
     return {};
   }
-  
-  const chunks = await retrievalManager.retrieve(query, route);
+
+  const chunks = await retrievalManager.retrieve(searchQuery ?? query, route);
 
   const ranked = rankChunks(chunks);
 

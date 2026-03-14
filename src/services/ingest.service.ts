@@ -6,6 +6,7 @@ import { splitter } from "../infra/embeddings.js";
 type IngestMetadata = {
   source : string;
   postId? : string;
+  title?: string;
   createdAt? : string;
 };
 

@@ -2,30 +2,24 @@ import { StateGraph, START, END } from "@langchain/langgraph";
 import { AgentState } from "./state.js";
 import {
   extractQueryNode,
+  rewriteQueryNode,
   decideIntentAndRetrievalNode,
-  // retrieveCommunityNode,
-  // retrieveMedicalNode,
-  // fanOutRetrievalNode,
   generateAnswerNode,
   retrieveContextNode,
 } from "./nodes.js";
-import { retrievalRouter } from "./router.js";
 
 export const cancerSupportGraph = new StateGraph(AgentState);
 
 cancerSupportGraph
   .addNode("extractQuery", extractQueryNode)
+  .addNode("rewriteQuery", rewriteQueryNode)
   .addNode("decideIntent", decideIntentAndRetrievalNode)
   .addNode("retrieveContext", retrieveContextNode)
   .addNode("generateAnswer", generateAnswerNode)
   .addEdge(START, "extractQuery")
-  .addEdge("extractQuery", "decideIntent")
-  .addConditionalEdges("decideIntent", retrievalRouter, {
-    community_only: "retrieveContext",
-    medical_only: "retrieveContext",
-    community_and_medical: "retrieveContext",
-    no_retrieval: "generateAnswer",
-  })
+  .addEdge("extractQuery", "rewriteQuery")
+  .addEdge("rewriteQuery", "decideIntent")
+  .addEdge("decideIntent", "retrieveContext")
   .addEdge("retrieveContext", "generateAnswer")
   .addEdge("generateAnswer", END);
 
