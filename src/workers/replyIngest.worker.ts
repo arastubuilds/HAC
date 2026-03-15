@@ -39,7 +39,7 @@ Reply: ${reply.content}
       `;
 
       await ingestText(text, "community", {
-        source: "reply",
+        source: "community",
         type: "reply",
         replyId: reply.id,
         postId: reply.postId,

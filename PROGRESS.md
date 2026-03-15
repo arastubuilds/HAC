@@ -812,6 +812,64 @@ Introduced `RetrievalType = "post" | "reply"` to decouple content-type from name
 
 ---
 
+# 32. Thread Expansion Pipeline
+
+When the retriever returns reply chunks, the agent now fetches the full thread context from Postgres and rebuilds the context with enriched thread blocks.
+
+**New file:** `src/ai/retrieval/threads/threadFetcher.ts`
+
+`fetchThreads(replyChunks)`:
+1. Groups reply chunks by `parentPostId`, tracks matched `replyId`s
+2. Sorts by match count desc, caps at 3 threads
+3. Parallel Prisma fetch — post + up to 10 replies per thread
+4. Returns `ThreadContext[]` with each reply flagged `isMatched: true/false`
+
+**New types** in `retrieval.types.ts`: `ThreadReply`, `ThreadContext`
+
+**New node** in `nodes.ts`: `expandThreadsNode`
+- Filters `retrievedChunks` for reply chunks
+- If any exist, calls `fetchThreads` then `buildContextWithThreads`
+- Overwrites `context` and `citations` in agent state
+- No-ops (returns `{}`) when no reply chunks are present
+
+**Graph wiring** (`graph.ts`):
+```
+extractQuery → rewriteQuery → decideIntent → retrieveContext → expandThreads → generateAnswer
+```
+
+**`buildContextWithThreads`** in `contextBuilder.ts`:
+- Keeps non-expanded post/reply chunks in regular `SOURCE [N]` blocks
+- Adds `THREAD [N]` blocks showing full post content + all replies, with `** MATCHED **` markers on retrieved replies
+- Reply chunks whose `parentPostId` was expanded are excluded from the regular section (no duplication)
+
+---
+
+# 33. Citation Metadata Enrichment — Reply Fields in API Response
+
+Enriched the `Citation` type and both context-builder paths so reply-specific data surfaces in the `POST /query` response.
+
+**`src/ai/retrieval/types/citation.types.ts`:**
+
+```ts
+type Citation = {
+    index: number
+    source: "community" | "medical"
+    documentId: string
+    title?: string
+    type?: "post" | "reply"
+    snippet?: string          // first 120 chars of chunk text
+    parentPostId?: string     // only when type === "reply"
+}
+```
+
+**`buildSection`** (both `buildContext` and `buildContextWithThreads`): populates `type`, `snippet`, and `parentPostId` for every chunk citation.
+
+**Thread loop in `buildContextWithThreads`**: no longer emits a post-level citation with a nested `matchedReplies` array. Instead, each matched reply inside the thread becomes its own top-level citation (`type: "reply"`, `documentId: replyId`, `parentPostId`, `snippet`). The parent post is already covered by its own chunk citation from the regular section.
+
+**`src/api/dtos/query.dto.ts`**: `QueryResponse.citations` widened to include `type`, `snippet`, `parentPostId`.
+
+---
+
 # 25. Posts API — Read Endpoints
 
 **Files modified:**

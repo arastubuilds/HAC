@@ -7,7 +7,8 @@ import { IntentDecisionSchema } from "./schemas/intent.js";
 import { llm } from "../../../infra/llm.js";
 import { RetrievalManager } from "../../retrieval/retrievers/retrieval.manager.js";
 import { rankChunks } from "../../retrieval/ranking/result.ranker.js";
-import { buildContext } from "../../retrieval/context/contextBuilder.js";
+import { buildContext, buildContextWithThreads } from "../../retrieval/context/contextBuilder.js";
+import { fetchThreads } from "../../retrieval/threads/threadFetcher.js";
 import { inspectRetrieval } from "../../retrieval/debug/retrieval.debug.js";
 
 
@@ -208,6 +209,18 @@ export async function retrieveContextNode(
 //     retrievedChunks: chunks,
 //   };
 // }
+
+export async function expandThreadsNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
+  const chunks = state.retrievedChunks ?? [];
+  const replyChunks = chunks.filter(c => c.type === "reply");
+  if (replyChunks.length === 0) return {};
+
+  const threads = await fetchThreads(replyChunks);
+  if (threads.length === 0) return {};
+
+  const { context, citations } = buildContextWithThreads(chunks, threads);
+  return { context, citations };
+}
 
 export async function generateAnswerNode(
   state: AgentStateType

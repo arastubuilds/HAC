@@ -6,7 +6,15 @@ export const QueryRequestDTO = z.object({
 
 export type QueryResponse = {
   answer: string;
-  citations: { index: number; source: string; documentId: string; title?: string }[];
+  citations: {
+    index: number;
+    source: string;
+    documentId: string;
+    title?: string;
+    type?: string;
+    snippet?: string;
+    parentPostId?: string;
+  }[];
   riskLevel: string;
   llmCalls: number;
 };

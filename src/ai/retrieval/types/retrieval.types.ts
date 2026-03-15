@@ -16,3 +16,18 @@ export type RetrievalChunk = {
     citationIndex?: number;
     score: number;
 }
+
+export type ThreadReply = {
+  id: string;
+  content: string;
+  createdAt: string;
+  isMatched: boolean;
+};
+
+export type ThreadContext = {
+  postId: string;
+  title: string;
+  postContent: string;
+  postCreatedAt: string;
+  replies: ThreadReply[];
+};
