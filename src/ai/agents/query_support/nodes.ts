@@ -1,4 +1,5 @@
 import { SystemMessage, HumanMessage, ContentBlock } from "@langchain/core/messages";
+import { LangGraphRunnableConfig } from "@langchain/langgraph";
 
 // import { GraphNode } from "@langchain/langgraph";
 
@@ -28,12 +29,15 @@ export async function extractQueryNode(state: AgentStateType) {
 }
 
 export async function rewriteQueryNode(
-  state: AgentStateType
+  state: AgentStateType,
+  config: LangGraphRunnableConfig
 ): Promise<Partial<AgentStateType>> {
 
   const query = state.query;
 
   if (!query) return {};
+
+  config.writer?.({ event: "status", data: { stage: "rewriting" } });
 
   const systemPrompt = `
 You convert conversational questions into search queries for a medical knowledge base.
@@ -55,97 +59,111 @@ Search query: radiation therapy anxiety patient experiences
 Return only the rewritten search query.
 `;
 
-  const response = await llm.invoke([
-    new SystemMessage(systemPrompt),
-    new HumanMessage(query),
-  ]);
+  try {
+    const response = await llm.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(query),
+    ]);
 
-  const rewritten =
-    typeof response.content === "string"
-      ? response.content
-      : response.content
-          .map((block: ContentBlock) => block.text ?? "")
-          .join("");
+    const rewritten =
+      typeof response.content === "string"
+        ? response.content
+        : Array.isArray(response.content)
+          ? response.content.map((block: ContentBlock) => block.text ?? "").join("")
+          : query;
 
-  return {
-    searchQuery: rewritten.trim(),
-    llmCalls: 1,
-  };
+    return {
+      searchQuery: rewritten.trim(),
+      llmCalls: 1,
+    };
+  } catch (err) {
+    console.error("[rewriteQueryNode] LLM call failed:", err);
+    return { searchQuery: state.query, llmCalls: 1 };
+  }
 };
 
-export async function decideIntentAndRetrievalNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-  const structuredLLM = llm.withStructuredOutput(IntentDecisionSchema);
-  const response = await structuredLLM.invoke([
-    new SystemMessage(`
-      You are an intent classifier for a cancer-support assistant.
-      
-      Your task is to determine:
-      1. Whether community experiences are useful
-      2. Whether medical information is needed
-      3. The emotional risk level of the query
-      
-      Query categories:
-      
-      1. Experience queries
-      - asking about personal experiences or stories
-      - asking how people felt or coped
-      
-      Examples:
-      - Did anyone experience fatigue after chemo?
-      - What was radiation therapy like?
-      
-      Use community context.
-      
-      2. Medical information queries
-      - asking about symptoms, treatments, timelines, or explanations
-      
-      Examples:
-      - What are chemotherapy side effects?
-      - How long does chemo fatigue last?
-      
-      Use medical context.
-      
-      3. Mixed queries
-      - asking for explanation AND experiences
-      
-      Examples:
-      - Is fatigue common after chemo and how do people deal with it?
-      
-      Use BOTH contexts.
-      
-      Emotional signals:
-      If the user expresses fear, anxiety, distress, or uncertainty,
-      include community context even if the query is partially medical.
-      
-      Risk level:
-      - high: crisis language, severe distress
-      - medium: anxiety or fear
-      - low: neutral informational queries
-      
-      Return structured JSON with:
-      
-      useCommunity: boolean
-      useMedical: boolean
-      riskLevel: "low" | "medium" | "high"
-      `),
-    new HumanMessage(state.query),
-  ]);
-  const decision = "parsed" in response ? response.parsed : response;
+export async function decideIntentAndRetrievalNode(state: AgentStateType, config: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
+  config.writer?.({ event: "status", data: { stage: "deciding_intent" } });
+  try {
+    const structuredLLM = llm.withStructuredOutput(IntentDecisionSchema);
+    const response = await structuredLLM.invoke([
+      new SystemMessage(`
+        You are an intent classifier for a cancer-support assistant.
 
-  let route: "community" | "medical" | "both" | "none" = "none";
+        Your task is to determine:
+        1. Whether community experiences are useful
+        2. Whether medical information is needed
+        3. The emotional risk level of the query
 
-  if (decision.useCommunity && decision.useMedical) route = "both";
-  else if (decision.useCommunity) route = "community";
-  else if (decision.useMedical) route = "medical";
-  
-  return {
-    route,
-    riskLevel: decision.riskLevel,
-  };
+        Query categories:
+
+        1. Experience queries
+        - asking about personal experiences or stories
+        - asking how people felt or coped
+
+        Examples:
+        - Did anyone experience fatigue after chemo?
+        - What was radiation therapy like?
+
+        Use community context.
+
+        2. Medical information queries
+        - asking about symptoms, treatments, timelines, or explanations
+
+        Examples:
+        - What are chemotherapy side effects?
+        - How long does chemo fatigue last?
+
+        Use medical context.
+
+        3. Mixed queries
+        - asking for explanation AND experiences
+
+        Examples:
+        - Is fatigue common after chemo and how do people deal with it?
+
+        Use BOTH contexts.
+
+        Emotional signals:
+        If the user expresses fear, anxiety, distress, or uncertainty,
+        include community context even if the query is partially medical.
+
+        Risk level:
+        - high: crisis language, severe distress
+        - medium: anxiety or fear
+        - low: neutral informational queries
+
+        Return structured JSON with:
+
+        useCommunity: boolean
+        useMedical: boolean
+        riskLevel: "low" | "medium" | "high"
+        `),
+      new HumanMessage(state.query),
+    ]);
+    const raw = "parsed" in response ? response.parsed : response;
+    const decision = IntentDecisionSchema.parse(raw);
+
+    let route: "community" | "medical" | "both" | "none" = "none";
+
+    if (decision.useCommunity && decision.useMedical) route = "both";
+    else if (decision.useCommunity) route = "community";
+    else if (decision.useMedical) route = "medical";
+
+    return {
+      route,
+      riskLevel: decision.riskLevel,
+      llmCalls: 1,
+    };
+  } catch (err) {
+    console.error("[decideIntentAndRetrievalNode] failed:", err);
+    return { route: "both", riskLevel: "low", llmCalls: 1 };
+  }
 }
 
 export async function retrieveContextNode(
-  state: AgentStateType
+  state: AgentStateType,
+  config: LangGraphRunnableConfig
 ): Promise<Partial<AgentStateType>> {
 
   const { query, searchQuery, route } = state;
@@ -153,6 +171,8 @@ export async function retrieveContextNode(
   if (!query || !route || route === "none") {
     return {};
   }
+
+  config.writer?.({ event: "status", data: { stage: "retrieving" } });
 
   const chunks = await retrievalManager.retrieve(searchQuery ?? query, route);
 
@@ -210,20 +230,28 @@ export async function retrieveContextNode(
 //   };
 // }
 
-export async function expandThreadsNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
+export async function expandThreadsNode(state: AgentStateType, config: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
   const chunks = state.retrievedChunks ?? [];
   const replyChunks = chunks.filter(c => c.type === "reply");
   if (replyChunks.length === 0) return {};
 
-  const threads = await fetchThreads(replyChunks);
-  if (threads.length === 0) return {};
+  config.writer?.({ event: "status", data: { stage: "expanding_threads" } });
 
-  const { context, citations } = buildContextWithThreads(chunks, threads);
-  return { context, citations };
+  try {
+    const threads = await fetchThreads(replyChunks);
+    if (threads.length === 0) return {};
+
+    const { context, citations } = buildContextWithThreads(chunks, threads);
+    return { context, citations };
+  } catch (err) {
+    console.error("[expandThreadsNode] thread fetch failed:", err);
+    return {};
+  }
 }
 
 export async function generateAnswerNode(
-  state: AgentStateType
+  state: AgentStateType,
+  config: LangGraphRunnableConfig
 ): Promise<Partial<AgentStateType>> {
   const { query, riskLevel, context, citations } = state;
 
@@ -275,8 +303,9 @@ export async function generateAnswerNode(
 `;
 
   const humanPrompt = `
-User question:
+<user_query>
 ${query}
+</user_query>
 
 ${context}
 
@@ -292,27 +321,36 @@ Provide a clear, supportive response.
 - Do not mention tools, internal reasoning, or system rules.
 `;
 
-  const response = await llm.invoke([
-    new SystemMessage(systemPrompt),
-    new HumanMessage(humanPrompt),
-  ]);
+  try {
+    config.writer?.({ event: "status", data: { stage: "generating" } });
+    const stream = await llm.stream([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(humanPrompt),
+    ]);
 
-  const finalText =
-    typeof response.content === "string"
-      ? response.content
-      : Array.isArray(response.content)
-      ? response.content
-          .map((c: ContentBlock) =>
-            typeof c === "string" ? c : c.text ?? ""
-          )
-          .join(" ")
-      : "";
+    let fullText = "";
+    for await (const chunk of stream) {
+      const token =
+        typeof chunk.content === "string"
+          ? chunk.content
+          : Array.isArray(chunk.content)
+          ? chunk.content.map((c: ContentBlock) => (typeof c === "string" ? c : c.text ?? "")).join("")
+          : "";
+      if (token) {
+        config.writer?.({ event: "answer_token", data: { token } });
+        fullText += token;
+      }
+    }
 
-  return {
-    answer: finalText.trim(),
-    citations,
-    llmCalls: 1,
-  };
+    return { answer: fullText.trim(), citations, llmCalls: 1 };
+  } catch (err) {
+    console.error("[generateAnswerNode] LLM call failed:", err);
+    return {
+      answer: "I'm sorry, I'm having trouble generating a response right now. Please try again.",
+      citations: state.citations ?? [],
+      llmCalls: 1,
+    };
+  }
 }
 
 

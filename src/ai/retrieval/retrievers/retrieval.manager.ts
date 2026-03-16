@@ -10,17 +10,29 @@ export class RetrievalManager {
     async retrieve(query: string, route: RetrievalRoute): Promise<RetrievalChunk[]> {
   
       if (route === "community") {
-        return this.communityRetriever.retrieve(query);
+        return this.communityRetriever.retrieve(query).catch(err => {
+          console.error("[RetrievalManager] community retriever failed:", err);
+          return [] as RetrievalChunk[];
+        });
       }
-  
+
       if (route === "medical") {
-        return this.medicalRetriever.retrieve(query);
+        return this.medicalRetriever.retrieve(query).catch(err => {
+          console.error("[RetrievalManager] medical retriever failed:", err);
+          return [] as RetrievalChunk[];
+        });
       }
-  
+
       // route === "both"
       const [communityResults, medicalResults] = await Promise.all([
-        this.communityRetriever.retrieve(query),
-        this.medicalRetriever.retrieve(query),
+        this.communityRetriever.retrieve(query).catch(err => {
+          console.error("[RetrievalManager] community retriever failed:", err);
+          return [] as RetrievalChunk[];
+        }),
+        this.medicalRetriever.retrieve(query).catch(err => {
+          console.error("[RetrievalManager] medical retriever failed:", err);
+          return [] as RetrievalChunk[];
+        }),
       ]);
       const COMMUNITY_LIMIT = 4;
       const MEDICAL_LIMIT = 4;

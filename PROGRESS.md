@@ -870,6 +870,58 @@ type Citation = {
 
 ---
 
+# 34. SSE Streaming — `POST /query`
+
+**Files:** `src/api/controllers/query.controller.ts`, `src/api/dtos/query.dto.ts`, `src/ai/agents/query_support/nodes.ts`
+
+Replaced the synchronous `cancerSupportAgent.invoke()` response with a full Server-Sent Events stream. The endpoint now hijacks the Fastify reply, sets `Content-Type: text/event-stream`, and streams JSON-encoded events as the agent progresses.
+
+**Stream event types** (defined in `query.dto.ts`):
+
+```ts
+{ type: "status"; stage: string }          // pipeline stage progress
+{ type: "token";  content: string }        // streamed answer token
+{ type: "done";   citations; riskLevel; llmCalls }  // final metadata
+{ type: "error";  message: string }        // agent failure
+```
+
+**Node-level changes (`nodes.ts`):**
+
+All five nodes now accept `LangGraphRunnableConfig` as a second argument and call `config.writer?.()` to emit status events at the start of each stage:
+
+```
+rewriteQuery      → { event: "status", data: { stage: "rewriting" } }
+decideIntent      → { event: "status", data: { stage: "deciding_intent" } }
+retrieveContext   → { event: "status", data: { stage: "retrieving" } }
+expandThreads     → { event: "status", data: { stage: "expanding_threads" } }
+generateAnswer    → { event: "status", data: { stage: "generating" } }
+```
+
+`generateAnswerNode` switched from `llm.invoke()` to `llm.stream()`, emitting each token as `{ event: "answer_token", data: { token } }`.
+
+**Controller** uses `cancerSupportAgent.stream()` with `streamMode: ["custom", "values"]` — `"custom"` chunks carry node events; `"values"` chunks capture the latest full state. Final `done` event is assembled from `lastState` after the loop.
+
+---
+
+# 35. Error Resilience — try/catch Throughout
+
+All previously unguarded async operations now have explicit error handling with sensible fallbacks so a single failure doesn't crash the request.
+
+| Location | Failure | Fallback |
+|---|---|---|
+| `rewriteQueryNode` | LLM call | use original `query` as `searchQuery` |
+| `decideIntentAndRetrievalNode` | LLM/parse | `route: "both"`, `riskLevel: "low"` |
+| `generateAnswerNode` | LLM stream | static sorry message |
+| `expandThreadsNode` | DB fetch | return `{}` (no-op) |
+| `RetrievalManager.retrieve()` | retriever | return `[]` per source |
+| `fetchThreads` | per-thread Prisma | `null` (filtered out) |
+| `ingest.service.ts` | split / embed / upsert | distinct error message thrown |
+| `ingest.service.ts` (delete) | post/reply filter-delete | distinct error message thrown |
+
+`contextBuilder.ts`: type field now spread conditionally (`...(chunk.type !== undefined && { type: chunk.type })`) to satisfy `exactOptionalPropertyTypes`.
+
+---
+
 # 25. Posts API — Read Endpoints
 
 **Files modified:**

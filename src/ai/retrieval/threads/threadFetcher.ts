@@ -32,6 +32,9 @@ export async function fetchThreads(replyChunks: RetrievalChunk[]): Promise<Threa
             select: { id: true, content: true, createdAt: true },
           },
         },
+      }).catch(err => {
+        console.error(`[fetchThreads] DB fetch failed for post ${postId}:`, err);
+        return null;
       })
     )
   );

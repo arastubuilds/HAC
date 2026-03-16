@@ -18,7 +18,12 @@ export async function ingestText(
   namespace: "community" | "medical",
   metadata: IngestMetadata
 ) {
-  const docs = await splitter.createDocuments([text]);
+  let docs: Awaited<ReturnType<typeof splitter.createDocuments>>;
+  try {
+    docs = await splitter.createDocuments([text]);
+  } catch (err) {
+    throw new Error(`Text splitting failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (!docs.length) {
     throw new Error("No documents after splitting");
@@ -26,10 +31,15 @@ export async function ingestText(
 
   const texts = docs.map(d => `passage: ${d.pageContent}`);
 
-  const vectors = await embeddingsModel.embedDocuments(texts);
+  let vectors: number[][];
+  try {
+    vectors = await embeddingsModel.embedDocuments(texts);
+  } catch (err) {
+    throw new Error(`HuggingFace embedding failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (!vectors.length) {
-    throw new Error("Embedding failed");
+    throw new Error("Embedding returned empty result");
   }
 
   const records = vectors.map((values, i) => ({
@@ -46,10 +56,14 @@ export async function ingestText(
     },
   }));
 
-  await pineconeIndex.upsert({
-    records,
-    namespace,
-  });
+  try {
+    await pineconeIndex.upsert({
+      records,
+      namespace,
+    });
+  } catch (err) {
+    throw new Error(`Pinecone upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   console.log(`Upserted ${records.length} vectors into ${namespace}`);
 }
@@ -58,12 +72,16 @@ export async function deletePostVectors(
   namespace: "community" | "medical",
   postId: string
 ) {
-  await pineconeIndex.deleteMany({
-    namespace,
-    filter: {
-      postId: { $eq : postId },
-    },
-  });
+  try {
+    await pineconeIndex.deleteMany({
+      namespace,
+      filter: {
+        postId: { $eq : postId },
+      },
+    });
+  } catch (err) {
+    throw new Error(`Pinecone delete failed for post ${postId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   console.log(`Deleted vectors for post ${postId}`);
 }
 
@@ -71,11 +89,15 @@ export async function deleteReplyVectors(
   namespace: "community" | "medical",
   replyId: string
 ) {
-  await pineconeIndex.deleteMany({
-    namespace,
-    filter: {
-      replyId: { $eq: replyId },
-    },
-  });
+  try {
+    await pineconeIndex.deleteMany({
+      namespace,
+      filter: {
+        replyId: { $eq: replyId },
+      },
+    });
+  } catch (err) {
+    throw new Error(`Pinecone delete failed for reply ${replyId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   console.log(`Deleted vectors for reply ${replyId}`);
 }

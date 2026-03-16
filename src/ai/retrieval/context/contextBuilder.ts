@@ -18,7 +18,7 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
                 source: chunk.source,
                 documentId: chunk.sourceId,
                 title: chunk.title ?? "",
-                type: chunk.type,
+                ...(chunk.type !== undefined && { type: chunk.type }),
                 snippet: chunk.text.slice(0, 120),
                 ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
             }
@@ -76,7 +76,7 @@ export function buildContextWithThreads(
         source: chunk.source,
         documentId: chunk.sourceId,
         title: chunk.title ?? "",
-        type: chunk.type,
+        ...(chunk.type !== undefined && { type: chunk.type }),
         snippet: chunk.text.slice(0, 120),
         ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
       });
