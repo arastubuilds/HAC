@@ -1,6 +1,6 @@
-import { Citation } from "./citation.types.js";
+import { type Citation } from "./citation.types.js";
 
-export type RetrievalContext = {
+export interface RetrievalContext {
     context: string;
     citations: Citation[];
-};
+}

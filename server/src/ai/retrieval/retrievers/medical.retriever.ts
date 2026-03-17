@@ -1,8 +1,8 @@
 import { embeddingsModel } from "../../../infra/embeddings.js";
 import { pineconeIndex } from "../../../infra/pinecone.js";
 
-import { RetrievalChunk } from "../types/retrieval.types.js";
-import { Retriever } from "./retriever.interface.js";
+import { type RetrievalChunk } from "../types/retrieval.types.js";
+import { type Retriever } from "./retriever.interface.js";
 
 import { asNumber, asString } from "../utils/metadata.js";
 
@@ -18,7 +18,7 @@ export class MedicalRetriever implements Retriever {
     });
 
     return (
-      results.matches?.flatMap((match) => {
+      results.matches.flatMap((match) => {
         const sourceId = asString(match.metadata?.sourceId);
         if (!sourceId) return [];
 
@@ -36,7 +36,7 @@ export class MedicalRetriever implements Retriever {
         if (chunkIndex !== undefined) chunk.chunkIndex = chunkIndex;
 
         return [chunk];
-      }) ?? []
+      })
     );
   }
 }

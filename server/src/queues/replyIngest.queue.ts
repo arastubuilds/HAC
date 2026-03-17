@@ -3,10 +3,10 @@ import { redisConnection } from "../infra/redis.js";
 
 export const REPLY_INGEST_QUEUE = "reply_ingest";
 
-export type ReplyIngestJob = {
+export interface ReplyIngestJob {
   type: "create" | "delete";
   replyId: string;
-};
+}
 
 export const replyIngestQueue = new Queue<ReplyIngestJob>(REPLY_INGEST_QUEUE, {
   connection: redisConnection,

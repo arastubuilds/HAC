@@ -1,5 +1,5 @@
 import { env } from "../../../config/env.js";
-import { RetrievalChunk } from "../types/retrieval.types.js";
+import { type RetrievalChunk } from "../types/retrieval.types.js";
 const DEBUG_RETRIEVAL = env.NODE_ENV === "development";
 
 export function inspectRetrieval(

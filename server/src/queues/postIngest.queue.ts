@@ -9,10 +9,10 @@ export const POST_INGEST_QUEUE = "post_ingest";
 /**
  * Job payload type
  */
-export type PostIngestJob = {
+export interface PostIngestJob {
   type: "create" | "update" | "delete";
   postId: string;
-};
+}
 
 /**
  * Queue instance

@@ -3,7 +3,7 @@ import { embeddingsModel } from "../infra/embeddings.js";
 import { splitter } from "../infra/embeddings.js";
 // import { v4 as uuidv4 } from "uuid";
 
-type IngestMetadata = {
+interface IngestMetadata {
   source: string;
   postId?: string;
   replyId?: string;
@@ -11,7 +11,7 @@ type IngestMetadata = {
   title?: string;
   createdAt?: string;
   type?: string;
-};
+}
 
 export async function ingestText(
   text: string,
@@ -22,7 +22,7 @@ export async function ingestText(
   try {
     docs = await splitter.createDocuments([text]);
   } catch (err) {
-    throw new Error(`Text splitting failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Text splitting failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 
   if (!docs.length) {
@@ -35,7 +35,7 @@ export async function ingestText(
   try {
     vectors = await embeddingsModel.embedDocuments(texts);
   } catch (err) {
-    throw new Error(`HuggingFace embedding failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`HuggingFace embedding failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 
   if (!vectors.length) {
@@ -62,7 +62,7 @@ export async function ingestText(
       namespace,
     });
   } catch (err) {
-    throw new Error(`Pinecone upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Pinecone upsert failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 
   console.log(`Upserted ${records.length} vectors into ${namespace}`);
@@ -80,7 +80,7 @@ export async function deletePostVectors(
       },
     });
   } catch (err) {
-    throw new Error(`Pinecone delete failed for post ${postId}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Pinecone delete failed for post ${postId}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
   console.log(`Deleted vectors for post ${postId}`);
 }
@@ -97,7 +97,7 @@ export async function deleteReplyVectors(
       },
     });
   } catch (err) {
-    throw new Error(`Pinecone delete failed for reply ${replyId}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Pinecone delete failed for reply ${replyId}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
   console.log(`Deleted vectors for reply ${replyId}`);
 }

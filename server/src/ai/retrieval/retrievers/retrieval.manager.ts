@@ -1,4 +1,4 @@
-import { RetrievalRoute, RetrievalChunk } from "../types/retrieval.types.js";
+import { type RetrievalRoute, type RetrievalChunk } from "../types/retrieval.types.js";
 import { CommunityRetriever } from "./community.retriever.js";
 import { MedicalRetriever } from "./medical.retriever.js";
 
@@ -10,14 +10,14 @@ export class RetrievalManager {
     async retrieve(query: string, route: RetrievalRoute): Promise<RetrievalChunk[]> {
   
       if (route === "community") {
-        return this.communityRetriever.retrieve(query).catch(err => {
+        return this.communityRetriever.retrieve(query).catch((err: unknown) => {
           console.error("[RetrievalManager] community retriever failed:", err);
           return [] as RetrievalChunk[];
         });
       }
 
       if (route === "medical") {
-        return this.medicalRetriever.retrieve(query).catch(err => {
+        return this.medicalRetriever.retrieve(query).catch((err: unknown) => {
           console.error("[RetrievalManager] medical retriever failed:", err);
           return [] as RetrievalChunk[];
         });
@@ -25,11 +25,11 @@ export class RetrievalManager {
 
       // route === "both"
       const [communityResults, medicalResults] = await Promise.all([
-        this.communityRetriever.retrieve(query).catch(err => {
+        this.communityRetriever.retrieve(query).catch((err: unknown) => {
           console.error("[RetrievalManager] community retriever failed:", err);
           return [] as RetrievalChunk[];
         }),
-        this.medicalRetriever.retrieve(query).catch(err => {
+        this.medicalRetriever.retrieve(query).catch((err: unknown) => {
           console.error("[RetrievalManager] medical retriever failed:", err);
           return [] as RetrievalChunk[];
         }),

@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { redisConnection } from "../infra/redis.js";
-import { POST_INGEST_QUEUE, PostIngestJob } from "../queues/postIngest.queue.js";
+import { POST_INGEST_QUEUE, type PostIngestJob } from "../queues/postIngest.queue.js";
 import { prisma } from "../infra/prisma.js";
 import { deletePostVectors, ingestText } from "../services/ingest.service.js";
 
@@ -8,7 +8,7 @@ export const postIngestWorker = new Worker<PostIngestJob>(
   POST_INGEST_QUEUE,
   async (job) => {
     try{
-        console.log(`Job ${job.id} received`, job.data); 
+        console.log(`Job ${job.id ?? "unknown"} received`, job.data);
 
         const { postId, type } = job.data;
         
@@ -62,11 +62,11 @@ export const postIngestWorker = new Worker<PostIngestJob>(
  */
 
 postIngestWorker.on("completed", (job) => {
-  console.log(`Job completed: ${job.id}`);
+  console.log(`Job completed: ${job.id ?? "unknown"}`);
 });
 
 postIngestWorker.on("failed", (job, err) => {
-  console.error(`Job failed: ${job?.id}`, err);
+  console.error(`Job failed: ${job?.id ?? "unknown"}`, err);
 });
 
 console.log("Post ingest worker started");

@@ -32,7 +32,7 @@ export async function fetchThreads(replyChunks: RetrievalChunk[]): Promise<Threa
             select: { id: true, content: true, createdAt: true },
           },
         },
-      }).catch(err => {
+      }).catch((err: unknown) => {
         console.error(`[fetchThreads] DB fetch failed for post ${postId}:`, err);
         return null;
       })
@@ -40,9 +40,9 @@ export async function fetchThreads(replyChunks: RetrievalChunk[]): Promise<Threa
   );
 
   // Step 4: assemble ThreadContext (skip deleted posts)
-  return results.flatMap((post, i) => {
+  return results.flatMap((post) => {
     if (!post) return [];
-    const matchedIds = sorted[i]![1];
+    const matchedIds = postToMatchedReplies.get(post.id) ?? new Set<string>();
     return [{
       postId: post.id,
       title: post.title,

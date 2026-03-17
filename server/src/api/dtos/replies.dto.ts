@@ -12,10 +12,10 @@ export const ReplyIdParamDTO = z.object({
   replyId: z.uuid(),
 });
 
-export type ReplyResponse = {
+export interface ReplyResponse {
   id: string;
   postId: string;
   userId: string;
   content: string;
   createdAt: string;
-};
+}

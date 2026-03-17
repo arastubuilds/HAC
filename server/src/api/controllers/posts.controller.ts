@@ -1,10 +1,10 @@
-import { FastifyReply, FastifyRequest } from "fastify";
+import { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { createPost, deletePost, getPost, listPosts, updatePost } from "../../services/posts.service.js";
-import { Post } from "../../domain/posts.js";
+import { type Post } from "../../domain/posts.js";
 import type { UpdatePostInput } from "../../domain/posts.js";
-import { CreatePostDTO, DeletePostDTO, PostResponse, UpdatePostDTO, UpdatePostParmasDTO } from "../dtos/posts.dto.js";
+import { CreatePostDTO, DeletePostDTO, type PostResponse, UpdatePostDTO, UpdatePostParmasDTO } from "../dtos/posts.dto.js";
 import { PaginationDTO } from "@hac/shared/types";
 
 export async function createPostHandler(
@@ -53,7 +53,7 @@ export async function updatePostHandler(
 
     try {
         const post = await updatePost(data);
-        return reply.status(200).send(toPostResponse(post));
+        return await reply.status(200).send(toPostResponse(post));
     } catch (err) {
         if (err instanceof Error && err.message === "POST_NOT_FOUND") {
             return reply.status(404).send({ error: "Post not found" });
@@ -77,7 +77,7 @@ export async function deletePostHandler(req: FastifyRequest, reply: FastifyReply
 
     try {
         await deletePost({ ...parsed.data, requestingUserId: req.user.sub });
-        return reply.status(204).send();
+        return await reply.status(204).send();
     } catch (err) {
         if (err instanceof Error && err.message === "POST_NOT_FOUND") {
             return reply.status(404).send({ error: "Post not found" });

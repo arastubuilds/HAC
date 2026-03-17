@@ -82,9 +82,14 @@ export class ApiClient {
   // ─── Posts ─────────────────────────────────────────────────────────────────
 
   getPosts(page = 1, pageSize = 20): Promise<PaginatedResponse<PostResponse>> {
-    return this.get<PaginatedResponse<PostResponse>>(
-      `/posts?page=${page}&pageSize=${pageSize}`
-    );
+    return this.get<{ posts: PostResponse[]; total: number; page: number; limit: number }>(
+      `/posts?page=${page}&limit=${pageSize}`
+    ).then((raw) => ({
+      data: raw.posts,
+      total: raw.total,
+      page: raw.page,
+      pageSize: raw.limit,
+    }));
   }
 
   getPost(postId: string): Promise<PostResponse> {
@@ -106,7 +111,9 @@ export class ApiClient {
   // ─── Replies ───────────────────────────────────────────────────────────────
 
   getReplies(postId: string): Promise<ReplyResponse[]> {
-    return this.get<ReplyResponse[]>(`/posts/${postId}/replies`);
+    return this.get<{ replies: ReplyResponse[]; total: number; page: number; limit: number }>(
+      `/posts/${postId}/replies`
+    ).then((raw) => raw.replies);
   }
 
   createReply(postId: string, content: string): Promise<ReplyResponse> {

@@ -27,6 +27,7 @@ const envSchema = z.object({
     PINECONE_INDEX: z.string().min(1, "PINECONE_INDEX is required"),
     HUGGING_FACE_API_KEY: z.string().min(1, "HUGGING_FACE_API_KEY is required"),
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+    FRONTEND_URL: z.string().default("http://localhost:3000"),
 });
 
 const parsed = envSchema.safeParse(process.env);

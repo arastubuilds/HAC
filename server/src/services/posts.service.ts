@@ -1,7 +1,7 @@
 import { prisma } from "../infra/prisma.js";
 import { enqueuePostIngest } from "../queues/postIngest.queue.js";
-import { CreatePostInput, Post, UpdatePostInput } from "../domain/posts.js";
-import { DeletePostInput } from "../api/dtos/posts.dto.js";
+import { type CreatePostInput, type Post, type UpdatePostInput } from "../domain/posts.js";
+import { type DeletePostInput } from "../api/dtos/posts.dto.js";
 
 export async function createPost(input: CreatePostInput): Promise<Post> {
   const post = await prisma.post.create({

@@ -1,6 +1,6 @@
-import { RetrievalChunk, ThreadContext } from "../types/retrieval.types.js";
-import { Citation } from "../types/citation.types.js";
-import { RetrievalContext } from "../types/context.types.js";
+import { type RetrievalChunk, type ThreadContext } from "../types/retrieval.types.js";
+import { type Citation } from "../types/citation.types.js";
+import { type RetrievalContext } from "../types/context.types.js";
 
 
 export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {

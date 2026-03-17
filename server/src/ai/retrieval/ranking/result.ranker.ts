@@ -1,4 +1,4 @@
-import { RetrievalChunk } from "../types/retrieval.types.js";
+import { type RetrievalChunk } from "../types/retrieval.types.js";
 
 const SOURCE_WEIGHT = {
   medical:   1.1,

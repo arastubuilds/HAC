@@ -1,8 +1,8 @@
-import { FastifyInstance } from "fastify";
+import { type FastifyInstance } from "fastify";
 import { createPostHandler, deletePostHandler, getPostHandler, listPostsHandler, updatePostHandler } from "../controllers/posts.controller.js";
 import { authenticate } from "../middleware/authenticate.middleware.js";
 
-export async function postsRoutes(app: FastifyInstance) {
+export function postsRoutes(app: FastifyInstance) {
   // Public
   app.get("/", listPostsHandler);
   app.get("/:postId", getPostHandler);

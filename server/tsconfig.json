@@ -2,7 +2,7 @@
   "compilerOptions": {
     /* Language */
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
@@ -31,6 +31,6 @@
     /* Performance */
     "incremental": true
   },
-  "include": ["src", "prisma"],
+  "include": ["src", "prisma",],
   "exclude": ["node_modules", "dist"]
 }

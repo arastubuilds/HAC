@@ -1,9 +1,9 @@
-import { FastifyReply, FastifyRequest } from "fastify";
+import { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { HumanMessage } from "@langchain/core/messages";
 import { QueryRequestDTO } from "../dtos/query.dto.js";
 import { cancerSupportAgent } from "../../ai/agents/query_support/graph.js";
-import { AgentStateType } from "../../ai/agents/query_support/state.js";
+import { type AgentStateType } from "../../ai/agents/query_support/state.js";
 
 export async function queryHandler(req: FastifyRequest, reply: FastifyReply) {
   const parsed = QueryRequestDTO.safeParse(req.body);
@@ -42,6 +42,7 @@ export async function queryHandler(req: FastifyRequest, reply: FastifyReply) {
     let lastState: Partial<AgentStateType> = {};
 
     for await (const [mode, chunk] of agentStream) {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (aborted) break;
 
       if (mode === "custom") {
@@ -51,11 +52,12 @@ export async function queryHandler(req: FastifyRequest, reply: FastifyReply) {
         } else if (ev.event === "status") {
           writeEvent({ type: "status", stage: ev.data.stage });
         }
-      } else if (mode === "values") {
+      } else {
         lastState = chunk as Partial<AgentStateType>;
       }
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!aborted) {
       writeEvent({
         type: "done",

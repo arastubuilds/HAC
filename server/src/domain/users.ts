@@ -1,13 +1,13 @@
-export type User = {
+export interface User {
   id: string;
   email: string;
   username: string;
   firstName: string | null;
   lastName: string | null;
   createdAt: Date;
-};
+}
 
-export type Account = {
+export interface Account {
   id: string;
   userId: string;
   provider: string;
@@ -17,12 +17,12 @@ export type Account = {
   refreshToken: string | null;
   tokenExpiresAt: Date | null;
   createdAt: Date;
-};
+}
 
-export type CreateUserInput = {
+export interface CreateUserInput {
   email: string;
   username: string;
   firstName?: string;
   lastName?: string;
   password: string;
-};
+}

@@ -952,3 +952,123 @@ GET /posts/:postId    — single post by ID
 ```
 
 ---
+
+# 36. Monorepo Restructure
+
+Repository reorganized into a pnpm monorepo:
+
+```
+hac-monorepo/
+├── server/          # Fastify API + BullMQ workers (src moved here)
+├── web/             # Next.js 15 frontend (App Router)
+├── packages/
+│   └── shared/      # @hac/shared — shared types + ApiClient
+├── pnpm-workspace.yaml
+└── package.json     # workspace root with concurrently dev script
+```
+
+- Root `package.json` runs `pnpm dev` via `concurrently` to start server + web in parallel
+- `packages/shared/src/api.ts` — shared TypeScript types (`PostResponse`, `ReplyResponse`, `PaginatedResponse`, etc.)
+- `packages/shared/src/lib/api.ts` — `ApiClient` class wrapping all Fastify endpoints
+
+---
+
+# 37. CORS + FRONTEND_URL
+
+- `server/src/config/env.ts`: added `FRONTEND_URL` (optional, default `http://localhost:3000`)
+- `server/src/server.ts`: registered `@fastify/cors` with `origin: env.FRONTEND_URL, credentials: true`
+- `server/.env.example`: updated to include `FRONTEND_URL`
+
+---
+
+# 38. server.ts Async Refactor
+
+`buildServer()` converted to `async` to support `await app.register(cors)`:
+
+- Startup: `runningServer = await buildServer()` so shutdown handler can reference the live instance
+- Signal handlers use `void shutdown(signal)` to satisfy no-floating-promises lint rule
+
+---
+
+# 39. Next.js Frontend (`web/`)
+
+Full Next.js 15 App Router frontend with TypeScript and Tailwind CSS.
+
+**Route groups:**
+- `(auth)` — login and register pages
+- `(main)` — forum pages
+
+**Pages:**
+- `/` — landing/home
+- `/login`, `/register` — auth forms (client components)
+- `/forum` — paginated post list (server component, SSR)
+- `/forum/new` — new post form
+- `/forum/[postId]` — post detail + replies (server component)
+- `/forum/[postId]/edit` — edit post form
+
+---
+
+# 40. Next.js BFF API Routes
+
+All routes live in `web/src/app/api/` and proxy to Fastify, extracting the JWT from the `token` httpOnly cookie and forwarding it as `Authorization: Bearer`:
+
+```
+POST   /api/auth/login                              — sets httpOnly cookie with JWT
+POST   /api/auth/register                           — sets httpOnly cookie
+POST   /api/auth/logout                             — clears cookie
+GET    /api/posts                                   — list posts
+POST   /api/posts                                   — create post
+GET    /api/posts/[postId]                          — get post
+PUT    /api/posts/[postId]                          — update post
+DELETE /api/posts/[postId]                          — delete post
+GET    /api/posts/[postId]/replies                  — list replies
+POST   /api/posts/[postId]/replies                  — create reply
+DELETE /api/posts/[postId]/replies/[replyId]        — delete reply
+```
+
+---
+
+# 41. Auth Layer (web)
+
+- `web/src/stores/auth.store.ts` — Zustand store: `{ user, setUser, clearUser }`
+- `web/src/components/auth/LoginForm.tsx` — client component, POSTs to `/api/auth/login`, updates store
+- `web/src/components/auth/RegisterForm.tsx` — same pattern for register
+- `web/src/app/(auth)/layout.tsx` — centered card layout for auth pages
+
+---
+
+# 42. Forum Components (web)
+
+**Server-side data fetching:**
+- `web/src/services/post.service.ts` — `getPosts(page)`, `getPost(id)` using server-side `ApiClient` with cookie token
+- `web/src/components/forum/PostList.tsx` — renders list of `PostCard`
+- `web/src/components/forum/PostCard.tsx` — card with title, date, excerpt
+- `web/src/components/forum/PostDetail.tsx` — full post with reply section
+- `web/src/components/forum/PostForm.tsx` — create/edit form (client component)
+- `web/src/components/forum/OwnerActions.tsx` — edit/delete buttons shown only to the post owner
+
+**Reply handling:**
+- `web/src/hooks/useReplies.ts` — React Query hook for fetching, creating, and deleting replies
+- `web/src/components/forum/ReplySection.tsx` — container: list + form
+- `web/src/components/forum/ReplyList.tsx` — skeleton loading + reply items
+- `web/src/components/forum/ReplyItem.tsx` — individual reply with delete action for owner
+- `web/src/components/forum/ReplyForm.tsx` — textarea + submit
+
+---
+
+# 43. Shared UI Components (web)
+
+`web/src/components/ui/`: `Button`, `Input`, `Textarea`, `Avatar`
+
+`web/src/components/layout/Navbar.tsx` — top nav with forum link and auth state (login/logout)
+
+---
+
+# 44. Shared Package ApiClient Fixes
+
+`packages/shared/src/lib/api.ts` corrected two methods to match actual Fastify response shapes:
+
+- `getPosts`: query param `pageSize` → `limit`; response now unwrapped from `{ posts, total, page, limit }` into `PaginatedResponse<PostResponse>`
+- `getReplies`: response was `ReplyResponse[]` → now unwrapped from `{ replies, total, page, limit }`
+
+---

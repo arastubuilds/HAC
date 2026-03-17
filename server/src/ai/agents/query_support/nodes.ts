@@ -1,9 +1,9 @@
-import { SystemMessage, HumanMessage, ContentBlock } from "@langchain/core/messages";
-import { LangGraphRunnableConfig } from "@langchain/langgraph";
+import { SystemMessage, HumanMessage, type ContentBlock } from "@langchain/core/messages";
+import { type LangGraphRunnableConfig } from "@langchain/langgraph";
 
 // import { GraphNode } from "@langchain/langgraph";
 
-import { AgentStateType } from "./state.js";
+import { type AgentStateType } from "./state.js";
 import { IntentDecisionSchema } from "./schemas/intent.js";
 import { llm } from "../../../infra/llm.js";
 import { RetrievalManager } from "../../retrieval/retrievers/retrieval.manager.js";
@@ -17,14 +17,18 @@ import { inspectRetrieval } from "../../retrieval/debug/retrieval.debug.js";
 
 const retrievalManager = new RetrievalManager();
 
-export async function extractQueryNode(state: AgentStateType) {
+export function extractQueryNode(state: AgentStateType) {
   const lastUserMessage = [...state.messages]
     .reverse()
     .find((m) => m instanceof HumanMessage);
   if (!lastUserMessage) return { query: "" };
 
   return {
-    query: lastUserMessage.content.toString(),
+    query: typeof lastUserMessage.content === "string"
+      ? lastUserMessage.content
+      : Array.isArray(lastUserMessage.content)
+        ? lastUserMessage.content.map((b: ContentBlock): string => typeof b === "string" ? b : (typeof b.text === "string" ? b.text : "")).join("")
+        : "",
   };
 }
 
@@ -69,7 +73,7 @@ Return only the rewritten search query.
       typeof response.content === "string"
         ? response.content
         : Array.isArray(response.content)
-          ? response.content.map((block: ContentBlock) => typeof block === "string" ? block : block.text ?? "").join("")
+          ? response.content.map((block: ContentBlock): string => typeof block === "string" ? block : (typeof block.text === "string" ? block.text : "")).join("")
           : query;
 
     return {
@@ -334,7 +338,7 @@ Provide a clear, supportive response.
         typeof chunk.content === "string"
           ? chunk.content
           : Array.isArray(chunk.content)
-          ? chunk.content.map((c: ContentBlock) => (typeof c === "string" ? c : c.text ?? "")).join("")
+          ? chunk.content.map((c: ContentBlock): string => (typeof c === "string" ? c : (typeof c.text === "string" ? c.text : ""))).join("")
           : "";
       if (token) {
         config.writer?.({ event: "answer_token", data: { token } });

@@ -6,8 +6,8 @@ import {
 
 import { z } from "zod";
 
-import { RetrievalChunk } from "../../retrieval/types/retrieval.types.js";
-import { Citation } from "../../retrieval/types/citation.types.js";
+import { type RetrievalChunk } from "../../retrieval/types/retrieval.types.js";
+import { type Citation } from "../../retrieval/types/citation.types.js";
 
 export const AgentState = new StateSchema({
     // conversation history

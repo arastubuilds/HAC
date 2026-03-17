@@ -32,7 +32,7 @@ export async function registerHandler(req: FastifyRequest, reply: FastifyReply) 
         createdAt: user.createdAt.toISOString(),
       },
     };
-    return reply.status(201).send(response);
+    return await reply.status(201).send(response);
   } catch (err) {
     if (err instanceof Error && err.message === "EMAIL_TAKEN") {
       return reply.status(409).send({ error: "Email already in use" });

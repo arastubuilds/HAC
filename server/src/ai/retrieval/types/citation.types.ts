@@ -1,4 +1,4 @@
-export type Citation = {
+export interface Citation {
     index: number
     source: "community" | "medical"
     documentId: string

@@ -1,7 +1,7 @@
 import { embeddingsModel } from "../../../infra/embeddings.js";
 import { pineconeIndex } from "../../../infra/pinecone.js";
-import { RetrievalChunk } from "../types/retrieval.types.js";
-import { Retriever } from "./retriever.interface.js";
+import { type RetrievalChunk } from "../types/retrieval.types.js";
+import { type Retriever } from "./retriever.interface.js";
 
 import { asNumber, asString } from "../utils/metadata.js";
 
@@ -17,7 +17,7 @@ export class CommunityRetriever implements Retriever {
       });
   
       return (
-        results.matches?.flatMap((match) => {
+        results.matches.flatMap((match) => {
           const metaType = asString(match.metadata?.type);
           const replyId = asString(match.metadata?.replyId);
           const postId = asString(match.metadata?.postId);
@@ -49,7 +49,7 @@ export class CommunityRetriever implements Retriever {
           if (chunkIndex !== undefined) chunk.chunkIndex = chunkIndex;
 
           return [chunk];
-        }) ?? []
+        })
       );
     }
   }

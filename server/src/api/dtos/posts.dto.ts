@@ -21,10 +21,10 @@ export const DeletePostDTO = z.object({
 export type DeletePostInput = z.infer<typeof DeletePostDTO> & { requestingUserId: string };
 export type CreatePostInput = z.infer<typeof CreatePostDTO>;
 
-export type PostResponse = {
+export interface PostResponse {
     id: string;
     title: string;
     content: string;
     createdAt: string; // ISO string for APIs
     userId: string;
-};
+}

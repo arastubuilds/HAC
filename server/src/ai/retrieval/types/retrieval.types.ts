@@ -3,7 +3,7 @@ export type RetrievalType   = "post" | "reply";
 
 export type RetrievalRoute = "community" | "medical" | "both";
 
-export type RetrievalChunk = {
+export interface RetrievalChunk {
     text: string;
     source: RetrievalSource;
     type?: RetrievalType;
@@ -17,17 +17,17 @@ export type RetrievalChunk = {
     score: number;
 }
 
-export type ThreadReply = {
+export interface ThreadReply {
   id: string;
   content: string;
   createdAt: string;
   isMatched: boolean;
-};
+}
 
-export type ThreadContext = {
+export interface ThreadContext {
   postId: string;
   title: string;
   postContent: string;
   postCreatedAt: string;
   replies: ThreadReply[];
-};
+}

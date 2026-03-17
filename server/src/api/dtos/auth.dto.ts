@@ -13,7 +13,7 @@ export const LoginDTO = z.object({
   password: z.string().min(1),
 });
 
-export type AuthResponse = {
+export interface AuthResponse {
   token: string;
   user: {
     id: string;
@@ -23,4 +23,4 @@ export type AuthResponse = {
     lastName: string | null;
     createdAt: string;
   };
-};
+}

@@ -1,4 +1,4 @@
-import fastify, { FastifyError } from "fastify";
+import fastify, { type FastifyError } from "fastify";
 import { healthRoutes } from "./api/routes/health.route.js";
 import { postsRoutes } from "./api/routes/posts.route.js";
 import { queryRoutes } from "./api/routes/query.route.js";
@@ -7,9 +7,14 @@ import { repliesRoutes } from "./api/routes/replies.route.js";
 import jwtPlugin from "./plugins/jwt.plugin.js";
 import { env } from "./config/env.js";
 
-export function buildServer() {
+export async function buildServer() {
     const app = fastify({
         trustProxy: true,       // importand behind load balancers
+    });
+
+    await app.register(import("@fastify/cors"), {
+        origin: env.FRONTEND_URL,
+        credentials: true,
     });
 
     app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -35,13 +40,15 @@ export function buildServer() {
 }
 
 
-const server = buildServer();
 const PORT = env.PORT;
 const HOST = "0.0.0.0";
 
+let runningServer: Awaited<ReturnType<typeof buildServer>> | null = null;
+
 async function start() {
     try {
-        await server.listen({port: PORT, host: HOST});
+        runningServer = await buildServer();
+        await runningServer.listen({port: PORT, host: HOST});
         console.log(`Server listening on ${HOST}:${PORT}`);
     } catch (error) {
         console.log(error);
@@ -49,12 +56,12 @@ async function start() {
     }
 }
 
-start();
+void start();
 
 const shutdown = async (signal: string) => {
     console.log(`Received ${signal}. Shutting down...`);
     try {
-        await server.close();
+        await runningServer?.close();
         process.exit(0);
     } catch (err) {
         console.error("Error during shutdown", err);
@@ -62,5 +69,5 @@ const shutdown = async (signal: string) => {
     }
 };
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", (signal) => { void shutdown(signal); });
+process.on("SIGTERM", (signal) => { void shutdown(signal); });

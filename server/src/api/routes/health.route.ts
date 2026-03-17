@@ -1,8 +1,8 @@
-import { FastifyInstance } from "fastify";
+import { type FastifyInstance } from "fastify";
 
-export async function healthRoutes(app: FastifyInstance) {
+export function healthRoutes(app: FastifyInstance) {
   //liveness probe
-  app.get("/", async () => {
+  app.get("/", () => {
     return {
       status: "ok",
       uptime: process.uptime(),
@@ -11,7 +11,7 @@ export async function healthRoutes(app: FastifyInstance) {
   });
 
   // readiness probe (to be expanded)
-  app.get("/ready", async () => {
+  app.get("/ready", () => {
     // In the future will check:
     // - Vector DB connectivity
     // - DB connectivity

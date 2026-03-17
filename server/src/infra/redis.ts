@@ -23,6 +23,6 @@ redisConnection.on("error", (err: Error) => {
 /**
  * Graceful shutdown
  */
-process.on("SIGTERM", async () => {
-  await redisConnection.quit();
+process.on("SIGTERM", () => {
+  void redisConnection.quit();
 });

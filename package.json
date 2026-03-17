@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.30.1",
   "scripts": {
     "dev":        "pnpm --filter server dev",
+    "dev:web":    "pnpm --filter web dev",
     "dev:api":    "pnpm --filter server dev:api",
     "dev:worker": "pnpm --filter server dev:worker",
     "build":      "pnpm -r build",

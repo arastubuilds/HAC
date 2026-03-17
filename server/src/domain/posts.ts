@@ -1,19 +1,19 @@
-export type Post = {
+export interface Post {
     id: string;
     title: string;
     content: string;
     createdAt: Date;
     userId: string;
-};
+}
 
-export type CreatePostInput = {
+export interface CreatePostInput {
     title: string;
     content: string;
     userId: string;
-};
+}
 
-export type UpdatePostInput = {
+export interface UpdatePostInput {
     postId: string;
     original: { title: string; content: string };
     requestingUserId: string;
-};
+}

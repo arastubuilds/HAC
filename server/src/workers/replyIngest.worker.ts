@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { redisConnection } from "../infra/redis.js";
-import { REPLY_INGEST_QUEUE, ReplyIngestJob } from "../queues/replyIngest.queue.js";
+import { REPLY_INGEST_QUEUE, type ReplyIngestJob } from "../queues/replyIngest.queue.js";
 import { prisma } from "../infra/prisma.js";
 import { deleteReplyVectors, ingestText } from "../services/ingest.service.js";
 
@@ -8,7 +8,7 @@ export const replyIngestWorker = new Worker<ReplyIngestJob>(
   REPLY_INGEST_QUEUE,
   async (job) => {
     try {
-      console.log(`Reply job ${job.id} received`, job.data);
+      console.log(`Reply job ${job.id ?? "unknown"} received`, job.data);
 
       const { replyId, type } = job.data;
 
@@ -61,11 +61,11 @@ Reply: ${reply.content}
 );
 
 replyIngestWorker.on("completed", (job) => {
-  console.log(`Reply job completed: ${job.id}`);
+  console.log(`Reply job completed: ${job.id ?? "unknown"}`);
 });
 
 replyIngestWorker.on("failed", (job, err) => {
-  console.error(`Reply job failed: ${job?.id}`, err);
+  console.error(`Reply job failed: ${job?.id ?? "unknown"}`, err);
 });
 
 console.log("Reply ingest worker started");
