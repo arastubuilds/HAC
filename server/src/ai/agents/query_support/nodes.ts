@@ -69,7 +69,7 @@ Return only the rewritten search query.
       typeof response.content === "string"
         ? response.content
         : Array.isArray(response.content)
-          ? response.content.map((block: ContentBlock) => block.text ?? "").join("")
+          ? response.content.map((block: ContentBlock) => typeof block === "string" ? block : block.text ?? "").join("")
           : query;
 
     return {
@@ -307,7 +307,7 @@ export async function generateAnswerNode(
 ${query}
 </user_query>
 
-${context}
+${context ?? "No additional context is available for this query."}
 
 Risk level:
 ${riskLevel}

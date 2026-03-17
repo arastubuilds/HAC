@@ -88,7 +88,7 @@ export function buildContextWithThreads(
   const communitySection = buildSection([...postChunks, ...nonExpandedReplyChunks]);
 
   const threadBlocks = threads.map(thread => {
-    const currIndex = citationIndex;
+    const startIndex = citationIndex;
     for (const r of thread.replies.filter(r => r.isMatched)) {
       citations.push({
         index: citationIndex++,
@@ -100,11 +100,13 @@ export function buildContextWithThreads(
         parentPostId: thread.postId,
       });
     }
+    const endIndex = citationIndex - 1;
+    const label = startIndex === endIndex ? `${startIndex}` : `${startIndex}-${endIndex}`;
     const replyLines = thread.replies.map((r, i) => {
       const marker = r.isMatched ? "** MATCHED ** " : "";
       return `  [${i + 1}] ${marker}${r.content}`;
     }).join("\n");
-    return `THREAD [${currIndex}]\ntitle: ${thread.title}\npost:\n${thread.postContent}\n\nreplies:\n${replyLines}`;
+    return `THREAD [${label}]\ntitle: ${thread.title}\npost:\n${thread.postContent}\n\nreplies:\n${replyLines}`;
   }).join("\n\n");
 
   const context = `Medical Information:\n\n${medicalSection}\n\nCommunity Information:\n\n${communitySection}\n\n${threadBlocks}`.trim();

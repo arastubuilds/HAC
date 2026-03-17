@@ -5,6 +5,7 @@ import { createPost, deletePost, getPost, listPosts, updatePost } from "../../se
 import { Post } from "../../domain/posts.js";
 import type { UpdatePostInput } from "../../domain/posts.js";
 import { CreatePostDTO, DeletePostDTO, PostResponse, UpdatePostDTO, UpdatePostParmasDTO } from "../dtos/posts.dto.js";
+import { PaginationDTO } from "@hac/shared/types";
 
 export async function createPostHandler(
   req: FastifyRequest,
@@ -89,9 +90,13 @@ export async function deletePostHandler(req: FastifyRequest, reply: FastifyReply
 }
 
 export async function listPostsHandler(req: FastifyRequest, reply: FastifyReply) {
-  const { page = 1, limit = 20 } = req.query as { page?: number; limit?: number };
-  const { posts, total } = await listPosts(Number(page), Number(limit));
-  return reply.status(200).send({ posts: posts.map(toPostResponse), total, page: Number(page), limit: Number(limit) });
+  const parsed = PaginationDTO.safeParse(req.query);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: "Invalid query parameters", details: z.treeifyError(parsed.error) });
+  }
+  const { page, limit } = parsed.data;
+  const { posts, total } = await listPosts(page, limit);
+  return reply.status(200).send({ posts: posts.map(toPostResponse), total, page, limit });
 }
 
 export async function getPostHandler(req: FastifyRequest<{ Params: { postId: string } }>, reply: FastifyReply) {

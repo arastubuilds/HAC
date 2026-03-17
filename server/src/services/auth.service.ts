@@ -36,7 +36,10 @@ export async function registerUser(input: CreateUserInput): Promise<User> {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      throw new Error("EMAIL_OR_USERNAME_TAKEN", {cause: error});
+      const fields = error.meta?.target as string[] | undefined;
+      if (fields?.includes("email")) throw new Error("EMAIL_TAKEN", { cause: error });
+      if (fields?.includes("username")) throw new Error("USERNAME_TAKEN", { cause: error });
+      throw new Error("EMAIL_OR_USERNAME_TAKEN", { cause: error });
     }
     throw error;
   }
@@ -59,6 +62,6 @@ export async function verifyCredentials(
   const valid = await bcrypt.compare(password, account.passwordHash);
   if (!valid) return null;
 
-  const { ...user } = userWithAccounts;
+  const { accounts: _accounts, ...user } = userWithAccounts;
   return user;
 }

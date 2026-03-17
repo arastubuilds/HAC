@@ -4,7 +4,9 @@ import type { FastifyInstance } from "fastify";
 import { env } from "../config/env.js";
 
 async function jwtPlugin(app: FastifyInstance): Promise<void> {
-  await app.register(fastifyJwt, { secret: env.JWT_SECRET });
+  // In NodeNext ESM, @fastify/jwt resolves as its merged function+namespace type.
+  // .fastifyJwt is the named export typed as FastifyPluginCallback<FastifyJWTOptions>.
+  await app.register(fastifyJwt.fastifyJwt, { secret: env.JWT_SECRET });
 }
 
 export default fp(jwtPlugin, { name: "jwt-plugin", fastify: "5.x" });

@@ -34,5 +34,7 @@ migrations
 PLAN.md
 PLANNED.md
 CLAUDE.md
+RESTRUCTURE.md
+FRONTEND.md
 .claude
 tsconfig.tsbuildinfo

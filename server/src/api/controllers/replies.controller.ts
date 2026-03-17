@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createReply, deleteReply, listReplies } from "../../services/replies.service.js";
 import type { Reply } from "../../domain/replies.js";
 import { CreateReplyDTO, PostIdParamDTO, ReplyIdParamDTO, ReplyResponse } from "../dtos/replies.dto.js";
+import { PaginationDTO } from "@hac/shared/types";
 
 export async function createReplyHandler(req: FastifyRequest, reply: FastifyReply) {
   const parsedParams = PostIdParamDTO.safeParse(req.params);
@@ -33,9 +34,13 @@ export async function listRepliesHandler(req: FastifyRequest, reply: FastifyRepl
     return reply.status(400).send({ error: "Invalid params", details: z.treeifyError(parsedParams.error) });
   }
 
-  const { page = 1, limit = 20 } = req.query as { page?: number; limit?: number };
-  const { replies, total } = await listReplies(parsedParams.data.postId, Number(page), Number(limit));
-  return reply.status(200).send({ replies: replies.map(toReplyResponse), total, page: Number(page), limit: Number(limit) });
+  const parsedQuery = PaginationDTO.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return reply.status(400).send({ error: "Invalid query parameters", details: z.treeifyError(parsedQuery.error) });
+  }
+  const { page, limit } = parsedQuery.data;
+  const { replies, total } = await listReplies(parsedParams.data.postId, page, limit);
+  return reply.status(200).send({ replies: replies.map(toReplyResponse), total, page, limit });
 }
 
 export async function deleteReplyHandler(req: FastifyRequest, reply: FastifyReply) {

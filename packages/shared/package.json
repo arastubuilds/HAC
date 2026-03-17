@@ -1,0 +1,13 @@
+{
+  "name": "@hac/shared",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".":       "./src/index.ts",
+    "./types": "./src/types/api.ts",
+    "./lib":   "./src/lib/api.ts"
+  },
+  "scripts": { "build": "tsc" },
+  "dependencies": { "zod": "^4.3.6" },
+  "devDependencies": { "typescript": "^5.9.3" }
+}
