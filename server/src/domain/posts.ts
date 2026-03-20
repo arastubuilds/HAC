@@ -4,6 +4,7 @@ export interface Post {
     content: string;
     createdAt: Date;
     userId: string;
+    username: string;
 }
 
 export interface CreatePostInput {

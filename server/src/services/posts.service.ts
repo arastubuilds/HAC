@@ -12,7 +12,8 @@ export async function createPost(input: CreatePostInput): Promise<Post> {
     },
   });
   await enqueuePostIngest({type: "create", postId: post.id});
-  return post;
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: post.userId }, select: { username: true } });
+  return { ...post, username: user.username };
 }
 
 export async function updatePost(updates: UpdatePostInput): Promise<Post> {
@@ -32,23 +33,30 @@ export async function updatePost(updates: UpdatePostInput): Promise<Post> {
   });
 
   await enqueuePostIngest({type: "update", postId: post.id});
-  return post;
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: post.userId }, select: { username: true } });
+  return { ...post, username: user.username };
 }
 
 export async function getPost(postId: string): Promise<Post | null> {
-  return prisma.post.findUnique({ where: { id: postId } });
+  const row = await prisma.post.findUnique({
+    where: { id: postId },
+    include: { user: { select: { username: true } } },
+  });
+  if (!row) return null;
+  return { ...row, username: row.user.username };
 }
 
 export async function listPosts(page: number, limit: number): Promise<{ posts: Post[]; total: number }> {
-  const [posts, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.post.findMany({
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,
+      include: { user: { select: { username: true } } },
     }),
     prisma.post.count(),
   ]);
-  return { posts, total };
+  return { posts: rows.map(r => ({ ...r, username: r.user.username })), total };
 }
 
 export async function deletePost(input: DeletePostInput): Promise<void> {

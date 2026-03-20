@@ -26,7 +26,7 @@ export function PostCard({ post, index }: PostCardProps) {
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
           <Avatar userId={post.userId} size="sm" />
-          <span className="text-sm text-text-secondary">By: {post.userId.slice(0, 8)}</span>
+          <span className="text-sm text-text-secondary">By: {post.username}</span>
         </div>
         <span className="text-xs text-text-muted">{formatDate(post.createdAt)}</span>
       </div>

@@ -24,6 +24,7 @@ export type PostResponse = {
   content: string;
   createdAt: string;
   userId: string;
+  username: string;
 };
 
 export type PaginatedResponse<T> = {

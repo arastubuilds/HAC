@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Registration failed";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const status = /→ 409:/.test(message) ? 409 : 400;
+    return NextResponse.json({ error: message }, { status });
   }
 }

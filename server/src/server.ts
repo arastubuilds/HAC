@@ -9,6 +9,7 @@ import { env } from "./config/env.js";
 
 export async function buildServer() {
     const app = fastify({
+        logger: true,
         trustProxy: true,       // importand behind load balancers
     });
 

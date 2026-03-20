@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { RegisterDTO, LoginDTO, type AuthResponse } from "../dtos/auth.dto.js";
 import { registerUser, verifyCredentials } from "../../services/auth.service.js";
+import { prisma } from "../../infra/prisma.js";
 
 export async function registerHandler(req: FastifyRequest, reply: FastifyReply) {
   const parsed = RegisterDTO.safeParse(req.body);
@@ -71,4 +72,20 @@ export async function loginHandler(req: FastifyRequest, reply: FastifyReply) {
     },
   };
   return reply.status(200).send(response);
+}
+
+export async function meHandler(req: FastifyRequest, reply: FastifyReply) {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.sub },
+    select: { id: true, email: true, username: true, firstName: true, lastName: true, createdAt: true },
+  });
+  if (!user) return reply.status(404).send({ error: "User not found" });
+  return reply.status(200).send({
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    createdAt: user.createdAt.toISOString(),
+  });
 }

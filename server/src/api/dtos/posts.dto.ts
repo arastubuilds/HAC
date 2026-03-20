@@ -27,4 +27,5 @@ export interface PostResponse {
     content: string;
     createdAt: string; // ISO string for APIs
     userId: string;
+    username: string;
 }

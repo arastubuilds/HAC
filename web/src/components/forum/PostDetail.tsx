@@ -29,7 +29,7 @@ export function PostDetail({ post }: PostDetailProps) {
       <div className="flex items-center gap-2 mb-4">
         <Avatar userId={post.userId} size="md" />
         <div className="flex flex-col">
-          <span className="text-sm text-text-secondary">By: {post.userId.slice(0, 8)}</span>
+          <span className="text-sm text-text-secondary">By: {post.username}</span>
           <span className="text-xs text-text-muted">{formatDate(post.createdAt)}</span>
         </div>
       </div>

@@ -113,5 +113,6 @@ function toPostResponse(post: Post): PostResponse {
       content: post.content,
       createdAt: post.createdAt.toISOString(),
       userId: post.userId,
+      username: post.username,
     };
 }

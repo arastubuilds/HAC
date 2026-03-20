@@ -6,28 +6,25 @@ import { Prisma } from "@prisma/client";
 
 export async function registerUser(input: CreateUserInput): Promise<User> {
   const passwordHash = await bcrypt.hash(input.password, 12);
+  const id = crypto.randomUUID();
 
   try {
-    const user = await prisma.$transaction(async (tx) => {
-      const created = await tx.user.create({
-        data: {
-          email: input.email,
-          username: input.username,
-          firstName: input.firstName ?? null,
-          lastName: input.lastName ?? null,
+    const { accounts: _accounts, ...user } = await prisma.user.create({
+      data: {
+        id,
+        email: input.email,
+        username: input.username,
+        firstName: input.firstName ?? null,
+        lastName: input.lastName ?? null,
+        accounts: {
+          create: {
+            provider: "local",
+            providerAccountId: id,
+            passwordHash,
+          },
         },
-      });
-
-      await tx.account.create({
-        data: {
-          userId: created.id,
-          provider: "local",
-          providerAccountId: created.id,
-          passwordHash,
-        },
-      });
-
-      return created;
+      },
+      include: { accounts: true },
     });
 
     return user;

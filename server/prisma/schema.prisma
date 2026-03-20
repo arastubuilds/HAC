@@ -1,20 +1,20 @@
-datasource db {
-  provider = "postgresql"
-}
-
 generator client {
   provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
 }
 
 model User {
   id        String    @id @default(uuid())
   email     String    @unique
-  username  String    @unique
+  createdAt DateTime  @default(now())
   firstName String?
   lastName  String?
-  createdAt DateTime  @default(now())
-  posts     Post[]
+  username  String    @unique
   accounts  Account[]
+  posts     Post[]
   replies   Reply[]
 
   @@index([email])
