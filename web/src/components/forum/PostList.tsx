@@ -37,7 +37,7 @@ export function PostList({ posts }: PostListProps) {
   }
 
   return (
-    <div>
+    <div className="flex flex-col gap-3">
       {posts.map((post, i) => (
         <PostCard key={post.id} post={post} index={i} />
       ))}

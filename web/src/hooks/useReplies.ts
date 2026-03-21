@@ -17,16 +17,16 @@ export function useReplies(postId: string) {
   });
 
   const createReply = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({ content, parentReplyId }: { content: string; parentReplyId?: string }) => {
       const res = await fetch(`/api/posts/${postId}/replies`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, parentReplyId }),
       });
       if (!res.ok) throw new Error("Failed to post reply");
       return res.json() as Promise<ReplyResponse>;
     },
-    onMutate: async (content) => {
+    onMutate: async ({ content, parentReplyId }) => {
       await qc.cancelQueries({ queryKey: ["replies", postId] });
       const prev = qc.getQueryData<ReplyResponse[]>(["replies", postId]);
       qc.setQueryData<ReplyResponse[]>(["replies", postId], (old) => [
@@ -35,6 +35,7 @@ export function useReplies(postId: string) {
           id: crypto.randomUUID(),
           postId,
           userId: "me",
+          parentReplyId,
           content,
           createdAt: new Date().toISOString(),
         },

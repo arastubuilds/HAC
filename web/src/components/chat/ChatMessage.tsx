@@ -1,7 +1,6 @@
 import type { Citation } from "@hac/shared/types";
 import { StatusIndicator } from "./StatusIndicator";
 import { CitationList } from "./CitationList";
-import { RiskBadge } from "./RiskBadge";
 
 export type ChatMessage = {
   id: string;
@@ -10,7 +9,6 @@ export type ChatMessage = {
   isStreaming?: boolean;
   stage?: string;
   citations?: Citation[];
-  riskLevel?: string;
   error?: string;
 };
 
@@ -38,7 +36,7 @@ export function ChatMessageItem({ message }: ChatMessageProps) {
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] bg-primary text-white px-4 py-2.5 rounded-2xl rounded-tr-sm text-[15px] leading-relaxed">
+        <div className="max-w-[85%] sm:max-w-[75%] bg-primary text-white px-4 py-2.5 rounded-2xl rounded-tr-sm text-[15px] leading-relaxed">
           {message.content}
         </div>
       </div>
@@ -50,7 +48,7 @@ export function ChatMessageItem({ message }: ChatMessageProps) {
     <div className="flex justify-start">
       <div
         className={[
-          "max-w-[80%] px-4 py-3 rounded-2xl rounded-tl-sm text-[15px] leading-relaxed",
+          "max-w-[90%] sm:max-w-[80%] px-4 py-3 rounded-2xl rounded-tl-sm text-[15px] leading-relaxed",
           message.error
             ? "bg-error/10 border border-error/20 text-error"
             : "bg-surface border border-border text-text-body",
@@ -68,11 +66,6 @@ export function ChatMessageItem({ message }: ChatMessageProps) {
                 <span className="inline-block w-0.5 h-4 bg-text-body ml-0.5 animate-[pulse_1s_step-end_infinite]" />
               )}
             </p>
-            {!message.isStreaming && message.riskLevel && (
-              <div className="mt-2">
-                <RiskBadge riskLevel={message.riskLevel as "low" | "medium" | "high"} />
-              </div>
-            )}
             {!message.isStreaming && message.citations && message.citations.length > 0 && (
               <CitationList citations={message.citations} />
             )}

@@ -1,14 +1,33 @@
 import { ReplyItem } from "./ReplyItem";
+import type { ReplyNode } from "./ReplyItem";
 import type { ReplyResponse } from "@hac/shared/types";
+
+export type { ReplyNode };
+
+function buildTree(replies: ReplyResponse[]): ReplyNode[] {
+  const map = new Map<string, ReplyNode>();
+  const roots: ReplyNode[] = [];
+  for (const r of replies) map.set(r.id, { ...r, children: [] });
+  for (const r of replies) {
+    const node = map.get(r.id)!;
+    if (r.parentReplyId && map.has(r.parentReplyId)) {
+      map.get(r.parentReplyId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
 
 interface ReplyListProps {
   replies: ReplyResponse[];
   isLoading: boolean;
   currentUserId?: string;
   onDelete: (id: string) => void;
+  onReply: (parentReplyId: string) => void;
 }
 
-export function ReplyList({ replies, isLoading, currentUserId, onDelete }: ReplyListProps) {
+export function ReplyList({ replies, isLoading, currentUserId, onDelete, onReply }: ReplyListProps) {
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -30,14 +49,18 @@ export function ReplyList({ replies, isLoading, currentUserId, onDelete }: Reply
     return <p className="text-text-muted text-sm py-4">Be the first to reply.</p>;
   }
 
+  const tree = buildTree(replies);
+
   return (
     <div>
-      {replies?.map((reply) => (
+      {tree.map((node) => (
         <ReplyItem
-          key={reply.id}
-          reply={reply}
+          key={node.id}
+          node={node}
           currentUserId={currentUserId}
           onDelete={onDelete}
+          onReply={onReply}
+          depth={0}
         />
       ))}
     </div>

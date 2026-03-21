@@ -12,9 +12,11 @@ type CreateReplyMutation = ReturnType<typeof useReplies>["createReply"];
 interface ReplyFormProps {
   createReply: CreateReplyMutation;
   user: User | null;
+  onClose?: () => void;
+  parentReplyId?: string;
 }
 
-export function ReplyForm({ createReply, user }: ReplyFormProps) {
+export function ReplyForm({ createReply, user, onClose, parentReplyId }: ReplyFormProps) {
   const [content, setContent] = useState("");
   const [error, setError] = useState<string | undefined>();
 
@@ -36,8 +38,11 @@ export function ReplyForm({ createReply, user }: ReplyFormProps) {
       return;
     }
     setError(undefined);
-    createReply.mutate(content.trim(), {
-      onSuccess: () => setContent(""),
+    createReply.mutate({ content: content.trim(), parentReplyId }, {
+      onSuccess: () => {
+        setContent("");
+        onClose?.();
+      },
     });
   }
 
@@ -51,10 +56,19 @@ export function ReplyForm({ createReply, user }: ReplyFormProps) {
         placeholder="Share your thoughts..."
         error={error}
       />
-      <div>
+      <div className="flex items-center gap-3">
         <Button type="submit" isLoading={createReply.isPending} size="md">
           Post reply
         </Button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </form>
   );

@@ -19,7 +19,7 @@ export function PostCard({ post, index }: PostCardProps) {
   return (
     <Link
       href={`/forum/${post.id}`}
-      className="block border-b border-border px-0 py-5 transition-colors duration-[var(--duration-base)] hover:bg-primary-subtle animate-card-enter"
+      className="bg-surface rounded-xl border border-border shadow-[var(--shadow-card)] px-5 py-4 block hover:shadow-[var(--shadow-md)] transition-shadow duration-[var(--duration-base)] animate-card-enter"
       style={{ animationDelay: `${Math.min(index, 4) * 40}ms` }}
     >
       {/* Author row */}

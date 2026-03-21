@@ -117,7 +117,7 @@ export function RegisterForm() {
         showPasswordToggle
         {...(fieldErrors.password ? { error: fieldErrors.password } : {})}
       />
-      <div className="flex gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row">
         <Input
           id="firstName"
           type="text"

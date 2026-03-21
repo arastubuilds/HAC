@@ -2,6 +2,7 @@
 
 import { use, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@/stores/auth.store";
 import { PostForm } from "@/components/forum/PostForm";
@@ -55,8 +56,15 @@ export default function EditPostPage({
   }
 
   return (
-    <div className="max-w-[800px]">
-      <h1 className="font-display text-2xl font-bold text-text-primary mb-6">Edit Post</h1>
+    <div className="max-w-2xl mx-auto">
+      <div className="mb-6">
+        <Link href={`/forum/${postId}`} className="text-sm text-text-secondary hover:text-text-primary transition-colors">
+          ← Post
+        </Link>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-text-primary mt-2">
+          Edit post
+        </h1>
+      </div>
       <PostForm
         defaultValues={{ title: post.title, content: post.content }}
         onSubmit={handleSubmit}

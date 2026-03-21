@@ -94,7 +94,6 @@ export default function ChatPage() {
                     isStreaming: false,
                     stage: undefined,
                     citations: event.citations as Citation[],
-                    riskLevel: event.riskLevel,
                   }
                 : m
             )

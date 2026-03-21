@@ -4,12 +4,17 @@ import { useAuthStore } from "@/stores/auth.store";
 import { useReplies } from "@/hooks/useReplies";
 import { ReplyList } from "./ReplyList";
 import { ReplyForm } from "./ReplyForm";
+import { Modal } from "@/components/ui/Modal";
 
 interface ReplySectionProps {
   postId: string;
+  isModalOpen: boolean;
+  onClose: () => void;
+  parentReplyId: string | undefined;
+  onReply: (parentReplyId: string) => void;
 }
 
-export function ReplySection({ postId }: ReplySectionProps) {
+export function ReplySection({ postId, isModalOpen, onClose, parentReplyId, onReply }: ReplySectionProps) {
   const user = useAuthStore((s) => s.user);
   const { query, createReply, deleteReply } = useReplies(postId);
 
@@ -21,10 +26,20 @@ export function ReplySection({ postId }: ReplySectionProps) {
         isLoading={query.isLoading}
         currentUserId={user?.id}
         onDelete={(id) => deleteReply.mutate(id)}
+        onReply={onReply}
       />
-      <div className="mt-8">
-        <ReplyForm createReply={createReply} user={user} />
-      </div>
+      <Modal
+        isOpen={isModalOpen}
+        onClose={onClose}
+        title="Add a reply"
+      >
+        <ReplyForm
+          createReply={createReply}
+          user={user}
+          onClose={onClose}
+          parentReplyId={parentReplyId}
+        />
+      </Modal>
     </div>
   );
 }

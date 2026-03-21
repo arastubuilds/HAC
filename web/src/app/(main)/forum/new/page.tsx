@@ -2,6 +2,7 @@
 
 import { useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuthStore } from "@/stores/auth.store";
 import { PostForm } from "@/components/forum/PostForm";
 import type { PostResponse } from "@hac/shared/types";
@@ -33,8 +34,15 @@ export default function NewPostPage() {
   }
 
   return (
-    <div className="max-w-[800px]">
-      <h1 className="font-display text-2xl font-bold text-text-primary mb-6">New Post</h1>
+    <div className="max-w-2xl mx-auto">
+      <div className="mb-6">
+        <Link href="/forum" className="text-sm text-text-secondary hover:text-text-primary transition-colors">
+          ← Forum
+        </Link>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-text-primary mt-2">
+          Start a conversation
+        </h1>
+      </div>
       <PostForm onSubmit={handleSubmit} submitLabel="Publish post" />
     </div>
   );

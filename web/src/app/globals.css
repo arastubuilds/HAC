@@ -66,8 +66,14 @@
   animation: card-enter var(--duration-enter) var(--ease-out) both;
 }
 
-html, body {
+html {
+  background: var(--color-nav-bg);
+  overflow-x: hidden;
+}
+
+body {
   background: var(--color-page-bg);
   color: var(--color-text-body);
   font-family: var(--font-body);
+  overflow-x: hidden;
 }

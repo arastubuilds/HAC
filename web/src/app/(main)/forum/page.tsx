@@ -22,7 +22,7 @@ export default async function ForumPage({
           <h1 className="font-display text-2xl font-bold text-text-primary">Community Forum</h1>
           <Link
             href="/forum/new"
-            className="bg-primary text-white font-semibold text-sm px-3 py-1.5 rounded-sm hover:bg-primary-hover transition-colors duration-[var(--duration-base)]"
+            className="bg-primary text-white font-semibold text-sm px-3 py-1.5 rounded-md hover:bg-primary-hover transition-colors duration-[var(--duration-base)]"
           >
             New post
           </Link>
@@ -35,7 +35,7 @@ export default async function ForumPage({
             {page > 1 && (
               <Link
                 href={`/forum?page=${page - 1}`}
-                className="text-sm border border-border text-text-primary px-3 py-1.5 rounded-sm hover:bg-primary-subtle transition-colors duration-[var(--duration-base)]"
+                className="text-sm border border-border text-text-primary px-3 py-1.5 rounded-md hover:bg-primary-subtle transition-colors duration-[var(--duration-base)]"
               >
                 ← Prev
               </Link>
@@ -46,7 +46,7 @@ export default async function ForumPage({
             {page < totalPages && (
               <Link
                 href={`/forum?page=${page + 1}`}
-                className="text-sm border border-border text-text-primary px-3 py-1.5 rounded-sm hover:bg-primary-subtle transition-colors duration-[var(--duration-base)]"
+                className="text-sm border border-border text-text-primary px-3 py-1.5 rounded-md hover:bg-primary-subtle transition-colors duration-[var(--duration-base)]"
               >
                 Next →
               </Link>
