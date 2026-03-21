@@ -52,15 +52,19 @@ model Post {
 }
 
 model Reply {
-  id        String   @id @default(uuid())
-  postId    String
-  userId    String
-  content   String
-  createdAt DateTime @default(now())
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid())
+  postId        String
+  userId        String
+  parentReplyId String?
+  content       String
+  createdAt     DateTime @default(now())
+  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent        Reply?   @relation("ReplyToReply", fields: [parentReplyId], references: [id], onDelete: Cascade)
+  children      Reply[]  @relation("ReplyToReply")
 
   @@index([postId])
   @@index([userId])
+  @@index([parentReplyId])
   @@index([createdAt])
 }

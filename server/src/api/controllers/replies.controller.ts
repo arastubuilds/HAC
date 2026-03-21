@@ -18,11 +18,14 @@ export async function createReplyHandler(req: FastifyRequest, reply: FastifyRepl
   }
 
   try {
-    const replyDoc = await createReply(parsedParams.data.postId, req.user.sub, parsedBody.data.content);
+    const replyDoc = await createReply(parsedParams.data.postId, req.user.sub, parsedBody.data.content, parsedBody.data.parentReplyId);
     return await reply.status(201).send(toReplyResponse(replyDoc));
   } catch (err) {
     if (err instanceof Error && err.message === "POST_NOT_FOUND") {
       return reply.status(404).send({ error: "Post not found" });
+    }
+    if (err instanceof Error && err.message === "PARENT_REPLY_NOT_FOUND") {
+      return reply.status(404).send({ error: "Parent reply not found" });
     }
     throw err;
   }
@@ -68,6 +71,7 @@ function toReplyResponse(r: Reply): ReplyResponse {
     id: r.id,
     postId: r.postId,
     userId: r.userId,
+    ...(r.parentReplyId != null ? { parentReplyId: r.parentReplyId } : {}),
     content: r.content,
     createdAt: r.createdAt.toISOString(),
   };

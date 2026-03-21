@@ -40,6 +40,7 @@ export type ReplyResponse = {
   id: string;
   postId: string;
   userId: string;
+  parentReplyId?: string;
   content: string;
   createdAt: string;
 };

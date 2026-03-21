@@ -5,13 +5,19 @@ import type { Reply } from "../domain/replies.js";
 export async function createReply(
   postId: string,
   userId: string,
-  content: string
+  content: string,
+  parentReplyId?: string
 ): Promise<Reply> {
   const post = await prisma.post.findUnique({ where: { id: postId }, select: { id: true } });
   if (!post) throw new Error("POST_NOT_FOUND");
 
+  if (parentReplyId) {
+    const parent = await prisma.reply.findUnique({ where: { id: parentReplyId }, select: { postId: true } });
+    if (!parent || parent.postId !== postId) throw new Error("PARENT_REPLY_NOT_FOUND");
+  }
+
   const reply = await prisma.reply.create({
-    data: { postId, userId, content },
+    data: { postId, userId, content, parentReplyId },
   });
 
   await enqueueReplyIngest({ type: "create", replyId: reply.id });

@@ -23,7 +23,8 @@ function recencyFactor(createdAt?: string): number {
 
 export function rankChunks(
   chunks: RetrievalChunk[],
-  topK = 8
+  topK = 8,
+  minScore = 0.65
 ): RetrievalChunk[] {
 
   const scored = chunks.map((chunk) => {
@@ -57,5 +58,5 @@ export function rankChunks(
     if (unique.length >= topK) break;
   }
 
-  return unique;
+  return unique.filter(c => c.score >= minScore);
 }

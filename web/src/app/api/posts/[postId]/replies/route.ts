@@ -17,9 +17,9 @@ export async function POST(
   const client = makeClient(req);
   if (!client) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { postId } = await params;
-  const { content } = (await req.json()) as { content: string };
+  const { content, parentReplyId } = (await req.json()) as { content: string; parentReplyId?: string };
   try {
-    const reply = await client.createReply(postId, content);
+    const reply = await client.createReply(postId, content, parentReplyId);
     return NextResponse.json(reply, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create reply";

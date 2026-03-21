@@ -1072,3 +1072,51 @@ DELETE /api/posts/[postId]/replies/[replyId]        — delete reply
 - `getReplies`: response was `ReplyResponse[]` → now unwrapped from `{ replies, total, page, limit }`
 
 ---
+
+# 45. Reply Threading
+
+`server/prisma/schema.prisma` — `Reply` model updated with self-referential relation:
+
+- `parentReplyId?: String?` — optional FK to another reply in the same post
+- Prisma relation name `"ReplyToReply"`: a reply has one optional parent and many children
+- Indices added on `parentReplyId` and `createdAt` for efficient tree and chronological queries
+
+`server/src/services/replies.service.ts`:
+
+- `createReply(postId, userId, content, parentReplyId?)` — validates parent reply belongs to same post before inserting; queues `replyIngest` job
+- `listReplies(postId, page, limit)` — paginated, ordered by `createdAt` ascending, returns `{ replies, total }`
+- `deleteReply(replyId, requestingUserId)` — ownership check; throws `"FORBIDDEN"` on mismatch; queues deletion job
+
+`server/src/api/dtos/replies.dto.ts`:
+
+- `CreateReplyDTO`: validates `content` (non-empty string) and optional `parentReplyId` (UUID)
+- `ReplyResponse` interface: `{ id, postId, userId, parentReplyId?, content, createdAt }`
+
+---
+
+# 46. Type-Weighted Ranking
+
+`server/src/ai/retrieval/ranking/result.ranker.ts` refined the scoring formula:
+
+- `SOURCE_WEIGHT`: `medical: 1.1`, `community: 1.0`
+- `TYPE_WEIGHT`: `post: 0.85`, `reply: 0.90` — community only; replies rank slightly higher than posts, reflecting conversational real-world relevance
+- Recency decay (`Math.max(0.5, 1 - ageDays / 365)`) applied only to community chunks over a 1-year horizon
+- Final score: `chunk.score × sourceWeight × typeWeight × recency`
+- Deduplication key: `chunk.replyId ?? chunk.sourceId`
+
+---
+
+# 47. Citation & Type Enrichment
+
+`packages/shared/src/types/api.ts`:
+
+- `Citation` now carries: `type?: "post" | "reply"`, `snippet?` (first 120 chars of content), `parentPostId?` (reply citations only — links back to the parent post)
+- `ReplyResponse` type added with `parentReplyId?` field for threaded replies
+
+`packages/shared/src/lib/api.ts`:
+
+- `getReplies(postId)` — fetches and unwraps `{ replies, total, page, limit }` into array
+- `createReply(postId, content, parentReplyId?)` — POST with optional nesting support
+- `deleteReply(postId, replyId)` — DELETE with ownership enforced server-side
+
+---

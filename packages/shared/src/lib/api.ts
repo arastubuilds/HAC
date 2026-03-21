@@ -116,8 +116,8 @@ export class ApiClient {
     ).then((raw) => raw.replies);
   }
 
-  createReply(postId: string, content: string): Promise<ReplyResponse> {
-    return this.post<ReplyResponse>(`/posts/${postId}/replies`, { content });
+  createReply(postId: string, content: string, parentReplyId?: string): Promise<ReplyResponse> {
+    return this.post<ReplyResponse>(`/posts/${postId}/replies`, { content, parentReplyId });
   }
 
   deleteReply(postId: string, replyId: string): Promise<void> {
