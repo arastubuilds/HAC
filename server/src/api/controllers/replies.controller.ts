@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { createReply, deleteReply, listReplies } from "../../services/replies.service.js";
 import type { Reply } from "../../domain/replies.js";
-import { CreateReplyDTO, PostIdParamDTO, ReplyIdParamDTO, type ReplyResponse } from "../dtos/replies.dto.js";
+import { CreateReplyDTO, DeleteReplyParamDTO, PostIdParamDTO, type ReplyResponse } from "../dtos/replies.dto.js";
 import { PaginationDTO } from "@hac/shared/types";
 
 export async function createReplyHandler(req: FastifyRequest, reply: FastifyReply) {
@@ -47,13 +47,13 @@ export async function listRepliesHandler(req: FastifyRequest, reply: FastifyRepl
 }
 
 export async function deleteReplyHandler(req: FastifyRequest, reply: FastifyReply) {
-  const parsed = ReplyIdParamDTO.safeParse(req.params);
+  const parsed = DeleteReplyParamDTO.safeParse(req.params);
   if (!parsed.success) {
     return reply.status(400).send({ error: "Invalid params", details: z.treeifyError(parsed.error) });
   }
 
   try {
-    await deleteReply(parsed.data.replyId, req.user.sub);
+    await deleteReply(parsed.data.replyId, req.user.sub, parsed.data.postId);
     return await reply.status(204).send();
   } catch (err) {
     if (err instanceof Error && err.message === "REPLY_NOT_FOUND") {

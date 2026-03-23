@@ -17,7 +17,7 @@ export async function createReply(
   }
 
   const reply = await prisma.reply.create({
-    data: { postId, userId, content, parentReplyId },
+    data: { postId, userId, content, parentReplyId: parentReplyId ?? null },
   });
 
   await enqueueReplyIngest({ type: "create", replyId: reply.id });
@@ -43,13 +43,14 @@ export async function listReplies(
 
 export async function deleteReply(
   replyId: string,
-  requestingUserId: string
+  requestingUserId: string,
+  postId: string
 ): Promise<void> {
   const existing = await prisma.reply.findUnique({
     where: { id: replyId },
-    select: { userId: true },
+    select: { userId: true, postId: true },
   });
-  if (!existing) throw new Error("REPLY_NOT_FOUND");
+  if (!existing || existing.postId !== postId) throw new Error("REPLY_NOT_FOUND");
   if (existing.userId !== requestingUserId) throw new Error("FORBIDDEN");
 
   await prisma.reply.delete({ where: { id: replyId } });

@@ -13,6 +13,11 @@ export const ReplyIdParamDTO = z.object({
   replyId: z.uuid(),
 });
 
+export const DeleteReplyParamDTO = z.object({
+  postId: z.uuid(),
+  replyId: z.uuid(),
+});
+
 export interface ReplyResponse {
   id: string;
   postId: string;
