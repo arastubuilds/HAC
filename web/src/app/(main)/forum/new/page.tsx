@@ -9,16 +9,16 @@ import type { PostResponse } from "@hac/shared/types";
 
 export default function NewPostPage() {
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
+  const { status, user } = useAuthStore((s) => ({ status: s.status, user: s.user }));
   const [, startTransition] = useTransition();
 
   useEffect(() => {
-    if (user === null) {
+    if (status === "unauthenticated") {
       router.replace("/login");
     }
-  }, [user, router]);
+  }, [status, router]);
 
-  if (user === null) return null;
+  if (status !== "authenticated") return null;
 
   async function handleSubmit(data: { title: string; content: string }) {
     const res = await fetch("/api/posts", {

@@ -17,13 +17,13 @@ export default function EditPostPage({
 }) {
   const { postId } = use(params);
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
+  const { status, user } = useAuthStore((s) => ({ status: s.status, user: s.user }));
 
   useEffect(() => {
-    if (user === null) {
+    if (status === "unauthenticated") {
       router.replace("/login");
     }
-  }, [user, router]);
+  }, [status, router]);
 
   const { data: post, isLoading, error } = useQuery({
     queryKey: ["post", postId],
@@ -32,10 +32,10 @@ export default function EditPostPage({
       if (!res.ok) throw new Error("Failed to load post");
       return res.json() as Promise<PostResponse>;
     },
-    enabled: user !== null,
+    enabled: status === "authenticated",
   });
 
-  if (user === null) return null;
+  if (status !== "authenticated" || !user) return null;
   if (isLoading) return <div className="skeleton h-64 w-full rounded-md" />;
   if (error) return <p className="text-error">Failed to load post.</p>;
   if (!post) return null;

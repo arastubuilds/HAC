@@ -4,14 +4,14 @@ import { useAuthStore } from "@/stores/auth.store";
 import type { User } from "@hac/shared/types";
 
 export function AuthHydrator() {
-  const setUser = useAuthStore((s) => s.setUser);
+  const { setUser, clearUser } = useAuthStore((s) => ({ setUser: s.setUser, clearUser: s.clearUser }));
 
   useEffect(() => {
     fetch("/api/auth/me")
       .then((res) => (res.ok ? (res.json() as Promise<User>) : Promise.reject()))
       .then((user) => setUser(user))
-      .catch(() => setUser(null));
-  }, [setUser]);
+      .catch(() => clearUser());
+  }, [setUser, clearUser]);
 
   return null;
 }

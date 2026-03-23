@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { QueryStreamEvent, Citation } from "@hac/shared/types";
+import type { QueryStreamEvent } from "@hac/shared/types";
 import { ChatMessageItem, type ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 
@@ -9,7 +9,7 @@ async function* parseSSE(body: ReadableStream<Uint8Array>) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
+  for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -26,6 +26,30 @@ async function* parseSSE(body: ReadableStream<Uint8Array>) {
 
 function makeId() {
   return Math.random().toString(36).slice(2);
+}
+
+async function readErrorMessage(res: Response): Promise<string> {
+  const fallback = `Request failed (${String(res.status)})`;
+  const text = await res.text().catch(() => "");
+  if (!text) return fallback;
+
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null) {
+      const error =
+        "error" in parsed && typeof parsed.error === "string"
+          ? parsed.error
+          : undefined;
+      const message =
+        "message" in parsed && typeof parsed.message === "string"
+          ? parsed.message
+          : undefined;
+      return error ?? message ?? fallback;
+    }
+    return fallback;
+  } catch {
+    return text;
+  }
 }
 
 export default function ChatPage() {
@@ -57,8 +81,8 @@ export default function ChatPage() {
         body: JSON.stringify({ message: input }),
       });
 
-      if (!res.ok || !res.body) {
-        const errText = res.ok ? "No response body" : `Error ${res.status}`;
+      if (!res.ok) {
+        const errText = await readErrorMessage(res);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
@@ -69,6 +93,20 @@ export default function ChatPage() {
         setIsStreaming(false);
         return;
       }
+
+      if (!res.body) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, isStreaming: false, error: "No response body" }
+              : m
+          )
+        );
+        setIsStreaming(false);
+        return;
+      }
+
+      let endedCleanly = false;
 
       for await (const event of parseSSE(res.body)) {
         if (event.type === "status") {
@@ -93,13 +131,14 @@ export default function ChatPage() {
                     ...m,
                     isStreaming: false,
                     stage: undefined,
-                    citations: event.citations as Citation[],
+                    citations: event.citations,
                   }
                 : m
             )
           );
+          endedCleanly = true;
           setIsStreaming(false);
-        } else if (event.type === "error") {
+        } else {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -107,8 +146,20 @@ export default function ChatPage() {
                 : m
             )
           );
+          endedCleanly = true;
           setIsStreaming(false);
         }
+      }
+
+      if (!endedCleanly) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, isStreaming: false, error: "The response stream ended unexpectedly." }
+              : m
+          )
+        );
+        setIsStreaming(false);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong";
@@ -127,7 +178,7 @@ export default function ChatPage() {
       <div className="px-6 py-5 border-b border-border shrink-0">
         <h1 className="font-display text-xl font-bold text-text-primary">HAC AI Support</h1>
         <p className="text-sm text-text-muted mt-0.5">
-          Ask questions about your cancer journey — I'll draw from the community and medical sources.
+          Ask questions about your cancer journey — I&apos;ll draw from the community and medical sources.
         </p>
       </div>
 
@@ -137,10 +188,10 @@ export default function ChatPage() {
           <div className="flex flex-col items-center justify-center h-full text-center gap-3">
             <div className="text-4xl">💬</div>
             <p className="font-display text-lg font-semibold text-text-primary">
-              What's on your mind?
+              What&apos;s on your mind?
             </p>
             <p className="text-sm text-text-muted max-w-sm">
-              Ask anything about your health journey. I'll search community experiences and medical
+              Ask anything about your health journey. I&apos;ll search community experiences and medical
               sources to give you a thoughtful answer.
             </p>
           </div>

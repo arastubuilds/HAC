@@ -19,6 +19,17 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({ message }),
   });
 
+  if (!upstream.ok) {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: {
+        "Content-Type": upstream.headers.get("content-type") ?? "application/json",
+        "Cache-Control": upstream.headers.get("cache-control") ?? "no-cache",
+      },
+    });
+  }
+
   return new Response(upstream.body, {
     headers: {
       "Content-Type": "text/event-stream",
