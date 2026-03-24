@@ -21,6 +21,7 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
                 ...(chunk.type !== undefined && { type: chunk.type }),
                 snippet: chunk.text.slice(0, 120),
                 ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
+                ...(chunk.originPlatform && { originPlatform: chunk.originPlatform }),
             }
             citations.push(citation);
             return `
@@ -79,6 +80,7 @@ export function buildContextWithThreads(
         ...(chunk.type !== undefined && { type: chunk.type }),
         snippet: chunk.text.slice(0, 120),
         ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
+        ...(chunk.originPlatform && { originPlatform: chunk.originPlatform }),
       });
       return `SOURCE [${currIndex}]\ntype: ${chunk.source}\ntitle: ${chunk.title ?? "Unknown"}\ncontent:\n${chunk.text}`;
     }).join("\n\n");

@@ -1,4 +1,4 @@
-import { Queue } from "bullmq";
+import { type JobsOptions, Queue } from "bullmq";
 import { redisConnection } from "../infra/redis.js";
 
 /**
@@ -33,6 +33,6 @@ export const postIngestQueue = new Queue<PostIngestJob>(POST_INGEST_QUEUE, {
 /**
  * Enqueue ingestion job
  */
-export async function enqueuePostIngest(postJob: PostIngestJob) {
-  await postIngestQueue.add("post_ingest_job", postJob);
+export async function enqueuePostIngest(postJob: PostIngestJob, options?: Pick<JobsOptions, "jobId">) {
+  await postIngestQueue.add("post_ingest_job", postJob, options);
 }

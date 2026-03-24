@@ -43,7 +43,14 @@ export const postIngestWorker = new Worker<PostIngestJob>(
         `;
 
         // Run ingestion pipeline
-        await ingestText(text, "community", { source: "community", type: "post", postId, title: post.title, createdAt: post.createdAt.toISOString(), });
+        await ingestText(text, "community", {
+          source: "community",
+          type: "post",
+          postId,
+          title: post.title,
+          createdAt: post.createdAt.toISOString(),
+          ...(post.originPlatform && { originPlatform: post.originPlatform }),
+        });
 
         console.log(`Ingestion complete for post ${postId}`);
     } catch(err) {

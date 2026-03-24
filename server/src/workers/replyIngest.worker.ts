@@ -46,6 +46,7 @@ Reply: ${reply.content}
         userId: reply.userId,
         title: reply.post.title,
         createdAt: reply.createdAt.toISOString(),
+        ...(reply.originPlatform && { originPlatform: reply.originPlatform }),
       });
 
       console.log(`Ingestion complete for reply ${replyId}`);

@@ -7,5 +7,6 @@ export interface Citation {
     // reply-specific (only present when type === "reply")
     snippet?: string
     parentPostId?: string
+    originPlatform?: string
 }
 

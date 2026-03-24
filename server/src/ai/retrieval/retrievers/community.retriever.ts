@@ -48,6 +48,9 @@ export class CommunityRetriever implements Retriever {
           const chunkIndex = asNumber(match.metadata?.chunkIndex);
           if (chunkIndex !== undefined) chunk.chunkIndex = chunkIndex;
 
+          const originPlatform = asString(match.metadata?.originPlatform);
+          if (originPlatform) chunk.originPlatform = originPlatform;
+
           return [chunk];
         })
       );

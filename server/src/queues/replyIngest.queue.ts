@@ -1,4 +1,4 @@
-import { Queue } from "bullmq";
+import { type JobsOptions, Queue } from "bullmq";
 import { redisConnection } from "../infra/redis.js";
 
 export const REPLY_INGEST_QUEUE = "reply_ingest";
@@ -21,6 +21,6 @@ export const replyIngestQueue = new Queue<ReplyIngestJob>(REPLY_INGEST_QUEUE, {
   },
 });
 
-export async function enqueueReplyIngest(job: ReplyIngestJob) {
-  await replyIngestQueue.add("reply_ingest_job", job);
+export async function enqueueReplyIngest(job: ReplyIngestJob, options?: Pick<JobsOptions, "jobId">) {
+  await replyIngestQueue.add("reply_ingest_job", job, options);
 }

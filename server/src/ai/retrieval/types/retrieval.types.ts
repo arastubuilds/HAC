@@ -15,6 +15,7 @@ export interface RetrievalChunk {
     chunkIndex?: number;
     citationIndex?: number;
     score: number;
+    originPlatform?: string;
 }
 
 export interface ThreadReply {

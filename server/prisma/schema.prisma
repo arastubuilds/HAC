@@ -39,32 +39,66 @@ model Account {
 }
 
 model Post {
-  id        String   @id @default(uuid())
-  title     String
-  content   String
-  createdAt DateTime @default(now())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  replies   Reply[]
+  id               String   @id @default(uuid())
+  title            String
+  content          String
+  createdAt        DateTime @default(now())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  replies          Reply[]
+  originPlatform   String?
+  waMessageKey     String?  @unique
+  waThreadKey      String?
+  importRunId      String?
+  relevanceScore   Float?
+  threadConfidence Float?
+  medicalRisk      String?
 
   @@index([createdAt])
   @@index([userId])
+  @@index([originPlatform])
+  @@index([waThreadKey])
 }
 
 model Reply {
-  id            String   @id @default(uuid())
-  postId        String
-  userId        String
-  parentReplyId String?
-  content       String
-  createdAt     DateTime @default(now())
-  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent        Reply?   @relation("ReplyToReply", fields: [parentReplyId], references: [id], onDelete: Cascade)
-  children      Reply[]  @relation("ReplyToReply")
+  id               String   @id @default(uuid())
+  postId           String
+  userId           String
+  parentReplyId    String?
+  content          String
+  createdAt        DateTime @default(now())
+  post             Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent           Reply?   @relation("ReplyToReply", fields: [parentReplyId], references: [id], onDelete: Cascade)
+  children         Reply[]  @relation("ReplyToReply")
+  originPlatform   String?
+  waMessageKey     String?  @unique
+  waThreadKey      String?
+  importRunId      String?
+  relevanceScore   Float?
+  threadConfidence Float?
+  medicalRisk      String?
 
   @@index([postId])
   @@index([userId])
   @@index([parentReplyId])
   @@index([createdAt])
+  @@index([originPlatform])
+  @@index([waThreadKey])
+}
+
+model ImportRun {
+  id                String    @id @default(uuid())
+  sourceFile        String
+  status            String
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  totalLines        Int       @default(0)
+  parsedMessages    Int       @default(0)
+  droppedMessages   Int       @default(0)
+  parseFailures     Int       @default(0)
+  createdPosts      Int       @default(0)
+  createdReplies    Int       @default(0)
+  skippedDuplicates Int       @default(0)
+  qaReviewThreads   Int       @default(0)
 }

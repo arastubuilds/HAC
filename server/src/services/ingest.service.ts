@@ -11,6 +11,7 @@ interface IngestMetadata {
   title?: string;
   createdAt?: string;
   type?: string;
+  originPlatform?: string;
 }
 
 export async function ingestText(
