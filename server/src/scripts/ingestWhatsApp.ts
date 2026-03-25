@@ -51,6 +51,7 @@ interface RunStats {
   createdReplies: number;
   skippedDuplicates: number;
   qaReviewThreads: number;
+  backwardAttached: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ interface RunStats {
 // "chemotherapy" both counting as separate signals).
 const TREATMENT_TERMS    = ["chemo", "chemotherapy", "radiation", "hormone", "tamoxifen", "zoladex", "letrozole", "anastrozole", "herceptin", "immunotherapy", "surgery", "mastectomy", "lumpectomy", "biopsy"];
 const SCAN_TERMS         = ["scan", "mri", "pet", "ct"];
-const SIDE_EFFECT_TERMS  = ["nausea", "vomiting", "fatigue", "weakness", "swelling", "fever", "infection", "pain", "hair loss", "weight", "appetite", "dryness", "hot flash", "menopause", "neutropenia", "loose motion", "diarrhea", "constipation", "digestion", "acidity", "gastro", "mouth sore", "neuropathy", "numbness", "tingling", "joint pain", "bone pain"];
+const SIDE_EFFECT_TERMS  = ["nausea", "vomiting", "fatigue", "weakness", "swelling", "fever", "infection", "pain", "hair loss", "weight", "appetite", "dryness", "hot flash", "menopause", "neutropenia", "loose motion", "diarrhea", "constipation", "digestion", "acidity", "gastro", "mouth sore", "neuropathy", "numbness", "tingling", "joint pain", "bone pain", "mood swing", "anxiety", "body ache", "joint", "ache", "insomnia", "headache", "rash", "bloating"];
 const SYMPTOM_TERMS      = ["hemoglobin", "platelet", "wbc", "port", "recurrence", "metastasis", "stage"];
 const CARE_TERMS         = ["oncologist", "doctor", "treatment", "nutrition", "diet", "exercise"];
 
@@ -131,9 +132,26 @@ const SOFT_REPLY_CAP    = 15;
 const MIN_RELEVANCE     = 30;
 const ANCHOR_MIN_SCORE          = 55;  // minimum score to start a new thread anchor (question/seeking)
 const ANCHOR_EXPERIENTIAL_SCORE = 35;  // lower anchor bar for experiential symptom posts (no ? required)
-const MIN_REPLY_SCORE           = 40;  // minimum score to attach a reply via high overlap
+const MIN_REPLY_SCORE           = 35;  // minimum score to attach a reply via high overlap
 const AUTO_PUBLISH_CONF = 45;
 const QA_CONF           = 28;
+
+// Sender-aware threading: boost effective overlap when sender matches thread participants
+const SENDER_BONUS_REPLIER = 0.08;  // sender matches a recent replier
+const SENDER_BONUS_ANCHOR  = 0.12;  // sender matches the thread anchor author
+
+// Middle band (0.20–0.35 overlap) tightening: require extra signal before attaching
+const MIDDLE_BAND_MIN_SCORE  = 50;
+const MIDDLE_BAND_RECENCY_MS = 15 * 60 * 1000;  // 15min — recent thread activity overrides middle-band gate
+
+// Near-thread relaxation: allow sub-MIN_RELEVANCE messages to attach if thread is very recent
+const NEAR_THREAD_RELAXED_MIN = 15;
+const NEAR_THREAD_WINDOW_MS  = 30 * 60 * 1000;  // 30 minutes
+
+// Backward-looking reply attachment: second pass over unattached messages
+const BACKWARD_WINDOW_MS         = 3 * 60 * 60 * 1000;  // 3h window
+const BACKWARD_ATTACH_THRESHOLD  = 0.30;                 // slightly lower than forward 0.35
+const BACKWARD_MIN_SCORE         = 35;                   // slightly lower than forward MIN_REPLY_SCORE 40
 
 // ─── Phase 0: Normalize ───────────────────────────────────────────────────────
 
@@ -355,6 +373,11 @@ function scoreRelevance(msg: WaMessage): number {
   const categoryHits = TERM_CATEGORIES.filter(cat => cat.some(t => lower.includes(t))).length;
   score += Math.min(categoryHits * 12, 36);
 
+  // Density bonus: listing multiple distinct side effects is more substantive than one.
+  const sideEffectHits = SIDE_EFFECT_TERMS.filter(t => lower.includes(t)).length;
+  if (sideEffectHits >= 3) score += 12;
+  else if (sideEffectHits >= 2) score += 6;
+
   if (msg.body.includes("?") || QUESTION_WORDS.some(w => lower.startsWith(w))) {
     score += 20;
   }
@@ -454,6 +477,13 @@ function threadContextStr(t: { anchor: ScoredMessage; replies: ScoredMessage[] }
   return t.anchor.body + " " + recent;
 }
 
+function senderBonus(msg: ScoredMessage, t: { anchor: ScoredMessage; replies: ScoredMessage[] }): number {
+  if (msg.sender === t.anchor.sender) return SENDER_BONUS_ANCHOR;
+  const recentRepliers = t.replies.slice(-3).map(r => r.sender);
+  if (recentRepliers.includes(msg.sender)) return SENDER_BONUS_REPLIER;
+  return 0;
+}
+
 function isQuestionLike(msg: ScoredMessage): boolean {
   const lower = msg.body.toLowerCase();
   return msg.body.includes("?") || QUESTION_WORDS.some(w => lower.startsWith(w));
@@ -496,15 +526,16 @@ function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage
 }
 
 
-function reconstructThreads(scored: ScoredMessage[]): WaThread[] {
+function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads: WaThread[]; backwardAttached: number } {
   interface ActiveThread {
     anchor: ScoredMessage;
     replies: ScoredMessage[];
     lastTime: number;
   }
 
-  const active: ActiveThread[] = [];
-  const finalized: WaThread[]  = [];
+  const active: ActiveThread[]     = [];
+  const finalized: WaThread[]      = [];
+  const unattached: ScoredMessage[] = [];
 
   function finalize(t: ActiveThread): void {
     finalized.push({
@@ -537,7 +568,53 @@ function reconstructThreads(scored: ScoredMessage[]): WaThread[] {
         if (now - best.lastTime <= GAP_NEW_THREAD_MS) {
           best.replies.push(msg);
           best.lastTime = now;
+        } else {
+          unattached.push(msg);
         }
+      } else if (active.length > 0 && msg.relevanceScore >= NEAR_THREAD_RELAXED_MIN) {
+        // Near-thread relaxation: borderline messages (15-29) can attach to
+        // very recently active threads via overlap, but never anchor new ones.
+        const now = msg.timestamp.getTime();
+        const recentThread = active.find(t => (now - t.lastTime) <= NEAR_THREAD_WINDOW_MS);
+        if (recentThread) {
+          // For near-thread relaxation, time proximity is the main signal.
+          // Require any shared medical category OR sender match — not Jaccard overlap,
+          // which is too low for short conversational replies.
+          const ctxLower = threadContextStr(recentThread).toLowerCase();
+          const msgLower2 = msg.body.toLowerCase();
+          const hasAnyCategoryMatch = TERM_CATEGORIES.some(cat => {
+            const msgHit = cat.some(t => msgLower2.includes(t));
+            const ctxHit = cat.some(t => ctxLower.includes(t));
+            return msgHit && ctxHit;
+          });
+          const hasSender = senderBonus(msg, recentThread) > 0;
+          const shouldAttach = hasAnyCategoryMatch || hasSender;
+          if (verbose) {
+            const gap = now - recentThread.lastTime;
+            console.log(
+              `    [RELAX] catMatch=${hasAnyCategoryMatch} sender=${hasSender} ` +
+              `gap=${Math.round(gap / 60000)}min score=${msg.relevanceScore} ` +
+              `${shouldAttach ? "→ATTACH" : "→SKIP"} ` +
+              `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
+            );
+          }
+          if (shouldAttach) {
+            recentThread.replies.push(msg);
+            recentThread.lastTime = now;
+          } else {
+            unattached.push(msg);
+          }
+        } else {
+          if (verbose) {
+            console.log(
+              `    [RELAX] no recent thread score=${msg.relevanceScore} ` +
+              `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
+            );
+          }
+          unattached.push(msg);
+        }
+      } else if (active.length > 0) {
+        unattached.push(msg);
       }
       continue;
     }
@@ -584,47 +661,116 @@ function reconstructThreads(scored: ScoredMessage[]): WaThread[] {
       continue;
     }
 
-    // Find best-overlapping thread
+    // Find best-overlapping thread (sender-aware: effective overlap includes sender bonus)
     const first = active[0];
     if (!first) continue;
-    let bestIdx     = 0;
-    let bestOverlap = topicOverlap(threadContextStr(first), msg.body);
+    let bestIdx       = 0;
+    let bestRawOv     = topicOverlap(threadContextStr(first), msg.body);
+    let bestEffective = bestRawOv + senderBonus(msg, first);
     for (let i = 1; i < active.length; i++) {
       const t = active[i];
       if (!t) continue;
-      const ov = topicOverlap(threadContextStr(t), msg.body);
-      if (ov > bestOverlap) { bestOverlap = ov; bestIdx = i; }
+      const rawOv = topicOverlap(threadContextStr(t), msg.body);
+      const effOv = rawOv + senderBonus(msg, t);
+      if (effOv > bestEffective) { bestRawOv = rawOv; bestEffective = effOv; bestIdx = i; }
     }
 
     const best = active[bestIdx];
     if (!best) continue;
 
-    if (bestOverlap >= ATTACH_THRESHOLD) {
+    if (verbose) {
+      const gap = now - best.lastTime;
+      const branch = bestEffective >= ATTACH_THRESHOLD ? "ATTACH" :
+        bestEffective < SPLIT_THRESHOLD ? "SPLIT" : "MIDDLE";
+      console.log(
+        `    [${branch}] ov=${bestRawOv.toFixed(3)} eff=${bestEffective.toFixed(3)} ` +
+        `gap=${Math.round(gap / 60000)}min score=${msg.relevanceScore} ` +
+        `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
+      );
+    }
+
+    if (bestEffective >= ATTACH_THRESHOLD) {
+      // Use raw overlap (not sender-inflated) for the soft-cap override
       if (msg.relevanceScore >= MIN_REPLY_SCORE &&
-          (best.replies.length < SOFT_REPLY_CAP || bestOverlap >= 0.5)) {
+          (best.replies.length < SOFT_REPLY_CAP || bestRawOv >= 0.5)) {
         best.replies.push(msg);
         best.lastTime = now;
+      } else {
+        unattached.push(msg);
       }
 
-    } else if (bestOverlap < SPLIT_THRESHOLD && (question || seeking) && independent) {
+    } else if (bestEffective < SPLIT_THRESHOLD && (question || seeking) && independent) {
       if (active.length >= 3) evictOldest();
       active.push({ anchor: msg, replies: [], lastTime: now });
 
     } else {
-      // Middle band 0.20–0.35 (and low-overlap experiential answers)
+      // Middle band — require extra signal before attaching
       const gap = now - best.lastTime;
       if (gap > GAP_NEW_THREAD_MS && (question || seeking) && independent) {
         if (active.length >= 3) evictOldest();
         active.push({ anchor: msg, replies: [], lastTime: now });
       } else if (msg.relevanceScore >= MIN_RELEVANCE) {
-        best.replies.push(msg);
-        best.lastTime = now;
+        const hasHighRelevance = msg.relevanceScore >= MIDDLE_BAND_MIN_SCORE;
+        const hasSharedMedical = (() => {
+          // Check shared categories using TERM_CATEGORIES (the full term list),
+          // not medicalCategorySet (which only covers the Hinglish synonym map).
+          const msgCats = new Set(
+            TERM_CATEGORIES.map((cat, i) => cat.some(t => msg.body.toLowerCase().includes(t)) ? i : -1)
+              .filter(i => i >= 0)
+          );
+          if (msgCats.size === 0) return false;
+          const ctxLower = threadContextStr(best).toLowerCase();
+          const threadCats = new Set(
+            TERM_CATEGORIES.map((cat, i) => cat.some(t => ctxLower.includes(t)) ? i : -1)
+              .filter(i => i >= 0)
+          );
+          return [...msgCats].some(i => threadCats.has(i));
+        })();
+        const hasSenderMatch = senderBonus(msg, best) > 0;
+        const hasRecentActivity = (now - best.lastTime) <= MIDDLE_BAND_RECENCY_MS;
+
+        if (hasHighRelevance || hasSharedMedical || hasSenderMatch || hasRecentActivity) {
+          best.replies.push(msg);
+          best.lastTime = now;
+        } else {
+          unattached.push(msg);
+        }
       }
     }
   }
 
   for (const t of active) finalize(t);
-  return finalized;
+
+  // ── Backward pass: attach delayed replies to finalized threads ──
+  let backwardCount = 0;
+  for (const msg of unattached) {
+    if (msg.relevanceScore < BACKWARD_MIN_SCORE) continue;
+
+    const msgTime = msg.timestamp.getTime();
+    let bestThread: WaThread | null = null;
+    let bestOv = 0;
+
+    for (const t of finalized) {
+      const anchorTime = t.anchor.timestamp.getTime();
+      if (msgTime < anchorTime) continue;
+      if (msgTime - anchorTime > BACKWARD_WINDOW_MS) continue;
+
+      const ctx = t.anchor.body + " " + t.replies.slice(-3).map(r => r.body).join(" ");
+      let ov = topicOverlap(ctx, msg.body);
+      ov += senderBonus(msg, t);
+
+      if (ov > bestOv) { bestOv = ov; bestThread = t; }
+    }
+
+    if (bestThread && bestOv >= BACKWARD_ATTACH_THRESHOLD) {
+      bestThread.replies.push(msg);
+      bestThread.replies.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      bestThread.threadConfidence = calcThreadConfidence(bestThread);
+      backwardCount++;
+    }
+  }
+
+  return { threads: finalized, backwardAttached: backwardCount };
 }
 
 // ─── Phase 6: Title Cleaning ──────────────────────────────────────────────────
@@ -748,6 +894,7 @@ async function seedThread(thread: WaThread, runId: string, stats: RunStats): Pro
 async function main(): Promise<void> {
   const args    = process.argv.slice(2);
   const dryRun  = args.includes("--dry-run");
+  const verbose = args.includes("--verbose");
 
   const linesIdx = args.indexOf("--lines");
   const linesArg = linesIdx !== -1
@@ -780,7 +927,7 @@ async function main(): Promise<void> {
   const stats: RunStats = {
     totalLines: lines.length, parsedMessages: 0, droppedMessages: 0,
     parseFailures: 0, createdPosts: 0, createdReplies: 0,
-    skippedDuplicates: 0, qaReviewThreads: 0,
+    skippedDuplicates: 0, qaReviewThreads: 0, backwardAttached: 0,
   };
 
   // ── Parse ──
@@ -813,8 +960,33 @@ async function main(): Promise<void> {
   console.log(`  Score 30–49:        ${buckets.borderline}`);
   console.log(`  Score >= 50:        ${buckets.eligible}`);
 
+  if (verbose) {
+    console.log("\n── Per-message scores (verbose) ─────────────────");
+    for (const m of scored) {
+      const lower = m.body.toLowerCase();
+      const cats = TERM_CATEGORIES.filter(cat => cat.some(t => lower.includes(t)));
+      const signals: string[] = [];
+      if (cats.length > 0) signals.push(`cats=${cats.length}`);
+      if (m.body.includes("?") || QUESTION_WORDS.some(w => lower.startsWith(w))) signals.push("question");
+      if (EXPERIENTIAL_PATTERNS.some(p => lower.includes(p))) signals.push("experiential");
+      if (SUPPORT_SEEKING_PATTERNS.some(p => lower.includes(p))) signals.push("seeking");
+      if (RECOMMENDATION_PATTERNS.some(p => lower.includes(p))) signals.push("recommend");
+      if (m.sender.startsWith("Dr.") || m.sender.startsWith("Dr ")) signals.push("doctor");
+      if (m.body.trim().length < 20 && cats.length === 0) signals.push("short-penalty");
+      if (/^(thank|thanks|ok|okay|noted|sure|yes|no|👍|🙏|great|good)\W*$/i.test(m.body.trim())) signals.push("ack-penalty");
+
+      const flag = m.relevanceScore < 30 ? "DROP" : m.relevanceScore < 50 ? "BORD" : "ELIG";
+      console.log(
+        `  [${flag}] score=${m.relevanceScore.toString().padStart(3)} ` +
+        `[${signals.join(", ") || "none"}] ` +
+        `${m.sender.slice(0, 15).padEnd(15)} | ${m.body.slice(0, 60).replace(/\n/g, " ")}`
+      );
+    }
+  }
+
   // ── Thread reconstruction (runs in both dry-run and live mode) ──
-  const threads = reconstructThreads(scored);
+  const { threads, backwardAttached } = reconstructThreads(scored, verbose);
+  stats.backwardAttached = backwardAttached;
 
   // Shared publish-gate helper so tStats, dry-run preview, and live seed loop
   // all use identical logic.
@@ -846,6 +1018,7 @@ async function main(): Promise<void> {
   console.log(`  Auto-publish (conf≥75 | 0-reply): ${tStats.autoPublish}`);
   console.log(`  QA review    (conf 55–74):         ${tStats.qa}`);
   console.log(`  Skipped:                           ${tStats.skip}`);
+  console.log(`  Backward-attached replies:         ${stats.backwardAttached}`);
 
   if (dryRun) {
     console.log("\n── Thread preview (dry-run, no DB writes) ──────");
