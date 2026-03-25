@@ -8,13 +8,17 @@
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --dry-run
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --lines 114-143
+ *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --date 25/10/25
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --file /path/to/_chat.txt
+ *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --spam-senders "Name1,Name2"
+ *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --spam-markers "prefix1,prefix2"
  */
 
 import { createHash } from "crypto";
 import { readFileSync, writeFileSync } from "fs";
 import { basename, resolve } from "path";
 import { prisma } from "../infra/prisma.js";
+import { redisConnection } from "../infra/redis.js";
 import { enqueuePostIngest } from "../queues/postIngest.queue.js";
 import { enqueueReplyIngest } from "../queues/replyIngest.queue.js";
 
@@ -63,30 +67,48 @@ const TREATMENT_TERMS    = ["chemo", "chemotherapy", "radiation", "hormone", "ta
 const SCAN_TERMS         = ["scan", "mri", "pet", "ct"];
 const SIDE_EFFECT_TERMS  = ["nausea", "vomiting", "fatigue", "weakness", "swelling", "fever", "infection", "pain", "hair loss", "weight", "appetite", "dryness", "hot flash", "menopause", "neutropenia", "loose motion", "diarrhea", "constipation", "digestion", "acidity", "gastro", "mouth sore", "neuropathy", "numbness", "tingling", "joint pain", "bone pain", "mood swing", "anxiety", "body ache", "joint", "ache", "insomnia", "headache", "rash", "bloating"];
 const SYMPTOM_TERMS      = ["hemoglobin", "platelet", "wbc", "port", "recurrence", "metastasis", "stage"];
-const CARE_TERMS         = ["oncologist", "doctor", "treatment", "nutrition", "diet", "exercise"];
+const CARE_TERMS         = ["oncologist", "doctor", "treatment", "nutrition", "diet", "exercise", "calorie", "protein"];
+const LOGISTICS_TERMS    = ["appointment", "hospital", "insurance", "report", "admit", "discharge", "lab", "blood test", "follow up", "second opinion", "referral", "prescription", "medicine", "pharmacy", "bill", "cost"];
 
-const TERM_CATEGORIES = [TREATMENT_TERMS, SCAN_TERMS, SIDE_EFFECT_TERMS, SYMPTOM_TERMS, CARE_TERMS];
+const TERM_CATEGORIES = [TREATMENT_TERMS, SCAN_TERMS, SIDE_EFFECT_TERMS, SYMPTOM_TERMS, CARE_TERMS, LOGISTICS_TERMS];
 
 // Romanized Hinglish synonyms for canonical medical terms.
 // Used to boost topic-overlap for Hinglish speakers who transliterate the
 // same concept differently ("kimo" == "chemo").
 const MEDICAL_SYNONYMS: Record<string, string[]> = {
-  chemo:      ["kimo", "kemo", "chemothe"],
-  radiation:  ["radiyation", "radiat", "radiotherapy"],
-  tamoxifen:  ["tamox", "tamoksifen"],
-  hormone:    ["hormon"],
-  surgery:    ["surgeri", "sarjari"],
-  nausea:     ["nausiya", "ulti"],
-  pain:       ["dard", "durd"],
-  doctor:     ["daktar"],
-  fatigue:    ["thakan", "kamzori"],
-  fever:      ["bukhar", "tapman"],
+  chemo:        ["kimo", "kemo", "chemothe"],
+  radiation:    ["radiyation", "radiat", "radiotherapy"],
+  tamoxifen:    ["tamox", "tamoksifen"],
+  hormone:      ["hormon"],
+  surgery:      ["surgeri", "sarjari", "operation"],
+  nausea:       ["nausiya", "ulti", "ji machlana"],
+  pain:         ["dard", "durd", "takleef", "peeda"],
+  doctor:       ["daktar", "doc"],
+  fatigue:      ["thakan", "kamzori", "weakness"],
+  fever:        ["bukhar", "tapman", "temperature"],
+  weight:       ["vajan", "wazan", "motapa"],
+  hair:         ["baal", "baal jharna"],
+  anxiety:      ["chinta", "tension", "ghabrahat"],
+  appetite:     ["bhook", "khana nahi"],
+  swelling:     ["sujan", "sooj"],
+  vomiting:     ["ulti", "vomit"],
+  constipation: ["kabz", "qabz", "pet saaf nahi"],
+  diarrhea:     ["dast", "loose motion", "pet kharab"],
+  headache:     ["sir dard", "sar dard"],
+  insomnia:     ["neend nahi", "nind nahi"],
+  hospital:     ["aspatal", "haspatal"],
+  report:       ["riport"],
+  medicine:     ["dawai", "dawa", "goli"],
+  blood:        ["khoon"],
+  appointment:  ["milne", "dikhane"],
 };
 
 const EXPERIENTIAL_PATTERNS = [
   "i had", "for me", "in my case", "my doctor", "my oncologist",
   "i was on", "i am on", "same here", "i too", "mujhe bhi",
-  "mere liye", "mera doctor",
+  "mere liye", "mera doctor", "mere saath", "meri mummy", "meri mom",
+  "i experienced", "i went through", "i was given", "i took",
+  "it happened to me", "i also had", "i also felt", "when i had",
 ];
 
 const QUESTION_WORDS = [
@@ -101,11 +123,15 @@ const RECOMMENDATION_PATTERNS = [
 ];
 
 const SHORT_CONTEXTUAL_REPLY_PATTERNS = [
-  /^(yes|yeah|yep|yaa|haan|han)\b/i,
+  /^(yes|yeah|yep|yaa|haan|han|ji)\b/i,
   /^(same|same here|same problem|same issue)\b/i,
   /^(me too|i too|same with me|happened to me|same for me)\b/i,
   /^i had this too/i,
   /^i have this (too|as well)/i,
+  /^(sahi|bilkul|exactly|totally|agreed)\b/i,
+  /^(mera bhi|mere saath bhi|mere bhi)\b/i,
+  /^(try karo|try karna|try kar)\b/i,
+  /^(correct|right|true)\b/i,
 ];
 
 const HINGLISH_MARKERS = [
@@ -122,36 +148,142 @@ const STOP_WORDS = new Set([
   "its", "been", "from", "by", "an", "as",
 ]);
 
-const DI_CHAPTER_MARKER = "Designs that listen..";
+// ── Configurable noise filters ──
+// Person-specific spam filters: override via --spam-senders CLI flag (comma-separated).
+// Each entry: { sender, patterns } — messages from sender matching any pattern are dropped.
+// If no --spam-senders is provided, defaults below are used.
+interface SpamSenderRule {
+  sender: string;
+  patterns: RegExp[];
+}
 
-const HARD_WINDOW_MS    = 5 * 60 * 60 * 1000;
-const GAP_NEW_THREAD_MS = 90 * 60 * 1000;
+const DEFAULT_SPAM_SENDER_RULES: SpamSenderRule[] = [
+  {
+    sender: "Ritika Makkar",
+    patterns: [
+      /^my lord/i,
+      /^shukrana/i,
+      /^शुक्रना/,
+      /^शुक्राना/,
+      /^मेरे प्रभु/,
+      /^मेरे भगवान/,
+    ],
+  },
+];
+
+// Content markers that are always filtered regardless of sender.
+// Override via --spam-markers CLI flag (comma-separated strings).
+let SPAM_CONTENT_MARKERS = ["Designs that listen.."];
+
+// ── Adaptive thresholds ──
+// These score-based thresholds are recomputed per-run by computeAdaptiveThresholds()
+// using percentiles of the actual score distribution, with hard floors to prevent
+// garbage days from producing garbage threads.
+let HARD_WINDOW_MS    = 5 * 60 * 60 * 1000;
+let GAP_NEW_THREAD_MS = 90 * 60 * 1000;
 const ATTACH_THRESHOLD  = 0.35;
 const SPLIT_THRESHOLD   = 0.20;
 const SOFT_REPLY_CAP    = 15;
-const MIN_RELEVANCE     = 30;
-const ANCHOR_MIN_SCORE          = 55;  // minimum score to start a new thread anchor (question/seeking)
-const ANCHOR_EXPERIENTIAL_SCORE = 35;  // lower anchor bar for experiential symptom posts (no ? required)
-const MIN_REPLY_SCORE           = 35;  // minimum score to attach a reply via high overlap
-const AUTO_PUBLISH_CONF = 45;
-const QA_CONF           = 28;
+let MIN_RELEVANCE     = 30;
+let ANCHOR_MIN_SCORE          = 55;  // minimum score to start a new thread anchor (question/seeking)
+let ANCHOR_EXPERIENTIAL_SCORE = 35;  // lower anchor bar for experiential symptom posts (no ? required)
+let MIN_REPLY_SCORE           = 35;  // minimum score to attach a reply via high overlap
+let AUTO_PUBLISH_CONF = 45;
+let QA_CONF           = 28;
 
 // Sender-aware threading: boost effective overlap when sender matches thread participants
 const SENDER_BONUS_REPLIER = 0.08;  // sender matches a recent replier
 const SENDER_BONUS_ANCHOR  = 0.12;  // sender matches the thread anchor author
 
 // Middle band (0.20–0.35 overlap) tightening: require extra signal before attaching
-const MIDDLE_BAND_MIN_SCORE  = 50;
+let MIDDLE_BAND_MIN_SCORE  = 50;
 const MIDDLE_BAND_RECENCY_MS = 15 * 60 * 1000;  // 15min — recent thread activity overrides middle-band gate
 
 // Near-thread relaxation: allow sub-MIN_RELEVANCE messages to attach if thread is very recent
-const NEAR_THREAD_RELAXED_MIN = 15;
+let NEAR_THREAD_RELAXED_MIN = 15;
 const NEAR_THREAD_WINDOW_MS  = 30 * 60 * 1000;  // 30 minutes
 
 // Backward-looking reply attachment: second pass over unattached messages
 const BACKWARD_WINDOW_MS         = 3 * 60 * 60 * 1000;  // 3h window
 const BACKWARD_ATTACH_THRESHOLD  = 0.30;                 // slightly lower than forward 0.35
-const BACKWARD_MIN_SCORE         = 35;                   // slightly lower than forward MIN_REPLY_SCORE 40
+let BACKWARD_MIN_SCORE         = 20;                   // low floor OK — backward pass has its own overlap gate (0.30)
+
+// ─── Adaptive Threshold Computation ──────────────────────────────────────────
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)] ?? 0;
+}
+
+function computeAdaptiveThresholds(scores: number[], verbose = false): void {
+  // Filter out pure noise (score 0-10) to avoid skewing percentiles
+  const meaningful = scores.filter(s => s > 10).sort((a, b) => a - b);
+
+  if (meaningful.length < 5) {
+    if (verbose) console.log("  [ADAPTIVE] Too few meaningful scores — keeping defaults");
+    return;
+  }
+
+  const p40 = percentile(meaningful, 40);
+  const p50 = percentile(meaningful, 50);
+  const p60 = percentile(meaningful, 60);
+  const p75 = percentile(meaningful, 75);
+
+  // Apply percentiles with hard floors so bad data can't produce absurd thresholds
+  MIN_RELEVANCE              = Math.max(p40, 20);
+  ANCHOR_MIN_SCORE           = Math.max(p75, 35);
+  ANCHOR_EXPERIENTIAL_SCORE  = Math.max(p40, 25);
+  MIN_REPLY_SCORE            = Math.max(p40, 25);
+  MIDDLE_BAND_MIN_SCORE      = Math.max(p60, 35);
+  NEAR_THREAD_RELAXED_MIN    = Math.max(Math.round(p40 * 0.5), 10);
+  BACKWARD_MIN_SCORE         = Math.max(Math.round(p40 * 0.6), 15);
+  AUTO_PUBLISH_CONF          = Math.max(p60, 35);
+  QA_CONF                    = Math.max(p40, 20);
+
+  if (verbose) {
+    console.log("  [ADAPTIVE] Score distribution:");
+    console.log(`    P40=${p40} P50=${p50} P60=${p60} P75=${p75}`);
+    console.log(`    → MIN_RELEVANCE=${MIN_RELEVANCE} ANCHOR_MIN=${ANCHOR_MIN_SCORE} ` +
+      `ANCHOR_EXP=${ANCHOR_EXPERIENTIAL_SCORE} MIN_REPLY=${MIN_REPLY_SCORE}`);
+    console.log(`    → MIDDLE_BAND_MIN=${MIDDLE_BAND_MIN_SCORE} NEAR_RELAXED=${NEAR_THREAD_RELAXED_MIN} ` +
+      `BACKWARD_MIN=${BACKWARD_MIN_SCORE}`);
+    console.log(`    → AUTO_PUBLISH=${AUTO_PUBLISH_CONF} QA=${QA_CONF}`);
+  }
+}
+
+// ─── Density-Adaptive Time Windows ──────────────────────────────────────────
+
+function computeAdaptiveWindows(messages: WaMessage[], verbose = false): void {
+  if (messages.length < 2) return;
+
+  const sorted = messages.map(m => m.timestamp.getTime()).sort((a, b) => a - b);
+  const first = sorted[0] ?? 0;
+  const last  = sorted[sorted.length - 1] ?? 0;
+  const spanHours = (last - first) / (1000 * 60 * 60);
+
+  if (spanHours < 0.5) return; // too short to compute meaningful density
+
+  const msgsPerHour = messages.length / spanHours;
+
+  // Scale windows based on density:
+  //   < 5 msg/hr  → slow chat: widen windows (180min gap, 8hr hard)
+  //   5-20 msg/hr → normal: keep defaults (90min gap, 5hr hard)
+  //   > 20 msg/hr → rapid: tighten windows (45min gap, 3hr hard)
+  if (msgsPerHour < 5) {
+    GAP_NEW_THREAD_MS = 180 * 60 * 1000;
+    HARD_WINDOW_MS    = 8 * 60 * 60 * 1000;
+  } else if (msgsPerHour > 20) {
+    GAP_NEW_THREAD_MS = 45 * 60 * 1000;
+    HARD_WINDOW_MS    = 3 * 60 * 60 * 1000;
+  }
+  // else: keep defaults (90min gap, 5hr hard)
+
+  if (verbose) {
+    console.log(`  [DENSITY] ${messages.length} msgs over ${spanHours.toFixed(1)}h → ${msgsPerHour.toFixed(1)} msg/hr`);
+    console.log(`    → GAP=${GAP_NEW_THREAD_MS / 60000}min HARD=${HARD_WINDOW_MS / 3600000}hr`);
+  }
+}
 
 // ─── Phase 0: Normalize ───────────────────────────────────────────────────────
 
@@ -330,7 +462,7 @@ function isBareUrl(s: string): boolean {
   return /^https?:\/\/\S+$/.test(s.trim());
 }
 
-function filterNoise(messages: WaMessage[]): WaMessage[] {
+function filterNoise(messages: WaMessage[], spamRules: SpamSenderRule[]): WaMessage[] {
   return messages.filter(msg => {
     if (msg.isSystem || msg.isMedia) return false;
 
@@ -338,21 +470,22 @@ function filterNoise(messages: WaMessage[]): WaMessage[] {
 
     if (!hasAlphanumeric(trimmed) || trimmed.length < 3) return false;
 
-    // Ritika Makkar daily devotionals
-    if (msg.sender === "Ritika Makkar") {
-      const lower = trimmed.toLowerCase();
-      if (
-        lower.startsWith("my lord") ||
-        trimmed.startsWith("Shukrana") ||
-        trimmed.startsWith("शुक्रना") ||
-        trimmed.startsWith("शुक्राना") ||
-        trimmed.startsWith("मेरे प्रभु") ||
-        trimmed.startsWith("मेरे भगवान")
-      ) return false;
+    // Configurable per-sender spam rules
+    for (const rule of spamRules) {
+      if (msg.sender === rule.sender && rule.patterns.some(p => p.test(trimmed))) {
+        return false;
+      }
     }
 
-    if (trimmed.startsWith(DI_CHAPTER_MARKER)) return false;
+    // Configurable content markers
+    if (SPAM_CONTENT_MARKERS.some(marker => trimmed.startsWith(marker))) return false;
     if (isBareUrl(trimmed)) return false;
+
+    // Promo / event announcements: contain a meeting URL + event keywords
+    const lower = trimmed.toLowerCase();
+    const hasMeetingUrl = /zoom\.us|meet\.google|teams\.microsoft/.test(lower);
+    const hasEventKeyword = ["join", "meeting", "register", "webinar", "support group"].some(k => lower.includes(k));
+    if (hasMeetingUrl && hasEventKeyword) return false;
 
     return true;
   });
@@ -582,17 +715,20 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
           // which is too low for short conversational replies.
           const ctxLower = threadContextStr(recentThread).toLowerCase();
           const msgLower2 = msg.body.toLowerCase();
-          const hasAnyCategoryMatch = TERM_CATEGORIES.some(cat => {
+          // Only match on specific categories (treatment, scans, side effects, symptoms)
+          // — exclude care terms (index 4) which are too generic and cross-match unrelated threads
+          const hasAnyCategoryMatch = TERM_CATEGORIES.slice(0, 4).some(cat => {
             const msgHit = cat.some(t => msgLower2.includes(t));
             const ctxHit = cat.some(t => ctxLower.includes(t));
             return msgHit && ctxHit;
           });
           const hasSender = senderBonus(msg, recentThread) > 0;
-          const shouldAttach = hasAnyCategoryMatch || hasSender;
+          const isDoctor = msg.sender.startsWith("Dr.") || msg.sender.startsWith("Dr ");
+          const shouldAttach = hasAnyCategoryMatch || hasSender || isDoctor;
           if (verbose) {
             const gap = now - recentThread.lastTime;
             console.log(
-              `    [RELAX] catMatch=${hasAnyCategoryMatch} sender=${hasSender} ` +
+              `    [RELAX] catMatch=${hasAnyCategoryMatch} sender=${hasSender} doctor=${isDoctor} ` +
               `gap=${Math.round(gap / 60000)}min score=${msg.relevanceScore} ` +
               `${shouldAttach ? "→ATTACH" : "→SKIP"} ` +
               `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
@@ -901,10 +1037,39 @@ async function main(): Promise<void> {
     ? args[linesIdx + 1]
     : args.find(a => a.startsWith("--lines="))?.slice("--lines=".length);
 
+  const dateIdx = args.indexOf("--date");
+  const dateArg = dateIdx !== -1
+    ? args[dateIdx + 1]
+    : args.find(a => a.startsWith("--date="))?.slice("--date=".length);
+
   const fileIdx = args.indexOf("--file");
   const fileArg = fileIdx !== -1
     ? args[fileIdx + 1]
     : args.find(a => a.startsWith("--file="))?.slice("--file=".length);
+
+  // --spam-senders: comma-separated sender names to drop all messages from
+  const spamSendersIdx = args.indexOf("--spam-senders");
+  const spamSendersArg = spamSendersIdx !== -1
+    ? args[spamSendersIdx + 1]
+    : args.find(a => a.startsWith("--spam-senders="))?.slice("--spam-senders=".length);
+
+  // --spam-markers: comma-separated content prefixes to filter
+  const spamMarkersIdx = args.indexOf("--spam-markers");
+  const spamMarkersArg = spamMarkersIdx !== -1
+    ? args[spamMarkersIdx + 1]
+    : args.find(a => a.startsWith("--spam-markers="))?.slice("--spam-markers=".length);
+
+  // Build spam rules: defaults + CLI overrides
+  const spamRules: SpamSenderRule[] = [...DEFAULT_SPAM_SENDER_RULES];
+  if (spamSendersArg) {
+    for (const name of spamSendersArg.split(",").map(s => s.trim()).filter(Boolean)) {
+      // CLI-added senders drop ALL their messages (match-everything pattern)
+      spamRules.push({ sender: name, patterns: [/[\s\S]*/] });
+    }
+  }
+  if (spamMarkersArg) {
+    SPAM_CONTENT_MARKERS = spamMarkersArg.split(",").map(s => s.trim()).filter(Boolean);
+  }
 
   const chatPath = fileArg
     ? resolve(fileArg)
@@ -915,6 +1080,20 @@ async function main(): Promise<void> {
 
   const raw = readFileSync(chatPath, "utf-8");
   let lines = normalize(raw);
+
+  if (dateArg) {
+    const prefix = `[${dateArg}`;
+    const dateLines: string[] = [];
+    let inDate = false;
+    for (const line of lines) {
+      if (line.startsWith("[")) {
+        inDate = line.startsWith(prefix);
+      }
+      if (inDate) dateLines.push(line);
+    }
+    lines = dateLines;
+    console.log(`Filtered to date ${dateArg} (${lines.length} lines)\n`);
+  }
 
   if (linesArg) {
     const parts = linesArg.split("-");
@@ -936,18 +1115,24 @@ async function main(): Promise<void> {
   stats.parseFailures  = failures;
 
   // ── Filter ──
-  const filtered = filterNoise(messages);
+  const filtered = filterNoise(messages, spamRules);
   stats.droppedMessages = messages.length - filtered.length;
+
+  // ── Adaptive time windows ──
+  computeAdaptiveWindows(filtered, verbose);
 
   // ── Score ──
   const scored: ScoredMessage[] = filtered.map(m => ({
     ...m, relevanceScore: scoreRelevance(m),
   }));
 
+  // ── Adaptive thresholds ──
+  computeAdaptiveThresholds(scored.map(m => m.relevanceScore), verbose);
+
   const buckets = { drop: 0, borderline: 0, eligible: 0 };
   for (const m of scored) {
-    if (m.relevanceScore < 30) buckets.drop++;
-    else if (m.relevanceScore < 50) buckets.borderline++;
+    if (m.relevanceScore < MIN_RELEVANCE) buckets.drop++;
+    else if (m.relevanceScore < ANCHOR_MIN_SCORE) buckets.borderline++;
     else buckets.eligible++;
   }
 
@@ -956,9 +1141,9 @@ async function main(): Promise<void> {
   console.log(`  Parsed messages:    ${stats.parsedMessages}`);
   console.log(`  Parse failures:     ${stats.parseFailures}`);
   console.log(`  After noise filter: ${filtered.length} (dropped ${stats.droppedMessages})`);
-  console.log(`  Score < 30:         ${buckets.drop}`);
-  console.log(`  Score 30–49:        ${buckets.borderline}`);
-  console.log(`  Score >= 50:        ${buckets.eligible}`);
+  console.log(`  Score < ${MIN_RELEVANCE} (drop):  ${buckets.drop}`);
+  console.log(`  Score ${MIN_RELEVANCE}–${ANCHOR_MIN_SCORE - 1} (border): ${buckets.borderline}`);
+  console.log(`  Score >= ${ANCHOR_MIN_SCORE} (anchor): ${buckets.eligible}`);
 
   if (verbose) {
     console.log("\n── Per-message scores (verbose) ─────────────────");
@@ -975,7 +1160,7 @@ async function main(): Promise<void> {
       if (m.body.trim().length < 20 && cats.length === 0) signals.push("short-penalty");
       if (/^(thank|thanks|ok|okay|noted|sure|yes|no|👍|🙏|great|good)\W*$/i.test(m.body.trim())) signals.push("ack-penalty");
 
-      const flag = m.relevanceScore < 30 ? "DROP" : m.relevanceScore < 50 ? "BORD" : "ELIG";
+      const flag = m.relevanceScore < MIN_RELEVANCE ? "DROP" : m.relevanceScore < ANCHOR_MIN_SCORE ? "BORD" : "ELIG";
       console.log(
         `  [${flag}] score=${m.relevanceScore.toString().padStart(3)} ` +
         `[${signals.join(", ") || "none"}] ` +
@@ -1106,6 +1291,8 @@ async function main(): Promise<void> {
   console.log(`  Skipped (dupes):     ${stats.skippedDuplicates}`);
   console.log(`  QA review threads:   ${stats.qaReviewThreads}`);
   console.log("\nDone. Run `pnpm dev:worker` to process the Pinecone ingestion queue.");
+
+  await redisConnection.quit();
 }
 
 void main().catch((err: unknown) => {
