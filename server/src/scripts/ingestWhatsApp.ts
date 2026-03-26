@@ -9,6 +9,8 @@
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --dry-run
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --lines 114-143
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --date 25/10/25
+ *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --week 01/11/25
+ *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --month 01/11/25
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --file /path/to/_chat.txt
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --spam-senders "Name1,Name2"
  *   pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --spam-markers "prefix1,prefix2"
@@ -17,10 +19,23 @@
 import { createHash } from "crypto";
 import { readFileSync, writeFileSync } from "fs";
 import { basename, resolve } from "path";
+import { embeddingsModel } from "../infra/embeddings.js";
 import { prisma } from "../infra/prisma.js";
 import { redisConnection } from "../infra/redis.js";
 import { enqueuePostIngest } from "../queues/postIngest.queue.js";
 import { enqueueReplyIngest } from "../queues/replyIngest.queue.js";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isDoctor(sender: string): boolean {
+  return sender.startsWith("Dr.") || sender.startsWith("Dr ");
+}
+
+function parseArg(args: string[], name: string): string | undefined {
+  const idx = args.indexOf(`--${name}`);
+  if (idx !== -1) return args[idx + 1];
+  return args.find(a => a.startsWith(`--${name}=`))?.slice(`--${name}=`.length);
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,10 +82,21 @@ const TREATMENT_TERMS    = ["chemo", "chemotherapy", "radiation", "hormone", "ta
 const SCAN_TERMS         = ["scan", "mri", "pet", "ct"];
 const SIDE_EFFECT_TERMS  = ["nausea", "vomiting", "fatigue", "weakness", "swelling", "fever", "infection", "pain", "hair loss", "weight", "appetite", "dryness", "hot flash", "menopause", "neutropenia", "loose motion", "diarrhea", "constipation", "digestion", "acidity", "gastro", "mouth sore", "neuropathy", "numbness", "tingling", "joint pain", "bone pain", "mood swing", "anxiety", "body ache", "joint", "ache", "insomnia", "headache", "rash", "bloating"];
 const SYMPTOM_TERMS      = ["hemoglobin", "platelet", "wbc", "port", "recurrence", "metastasis", "stage"];
-const CARE_TERMS         = ["oncologist", "doctor", "treatment", "nutrition", "diet", "exercise", "calorie", "protein"];
+const CARE_TERMS         = ["oncologist", "doctor", "treatment", "nutrition", "diet", "exercise", "gym", "calorie", "protein"];
 const LOGISTICS_TERMS    = ["appointment", "hospital", "insurance", "report", "admit", "discharge", "lab", "blood test", "follow up", "second opinion", "referral", "prescription", "medicine", "pharmacy", "bill", "cost"];
+const REMEDY_TERMS       = ["gel", "cream", "ointment", "mouthwash", "mouthpaint", "gargle", "oil pulling", "coconut oil", "aloe vera", "alsi", "turmeric", "haldi", "peppermint", "ginger", "honey", "supplement", "multivitamin", "vitamin", "home remedy", "nuskha", "gharelu", "ayurvedic", "homeopathy"];
 
-const TERM_CATEGORIES = [TREATMENT_TERMS, SCAN_TERMS, SIDE_EFFECT_TERMS, SYMPTOM_TERMS, CARE_TERMS, LOGISTICS_TERMS];
+const TERM_CATEGORIES = [TREATMENT_TERMS, SCAN_TERMS, SIDE_EFFECT_TERMS, SYMPTOM_TERMS, CARE_TERMS, LOGISTICS_TERMS, REMEDY_TERMS];
+
+// Reference topic texts for embedding-based relevance scoring.
+// Each message's embedding is compared against these; high cosine → relevant content.
+const REFERENCE_TOPICS = [
+  "chemotherapy side effects and treatment",
+  "emotional support and mental health during cancer",
+  "diet nutrition and exercise during cancer",
+  "medical appointments and hospital logistics",
+  "cancer diagnosis staging and prognosis",
+];
 
 // Romanized Hinglish synonyms for canonical medical terms.
 // Used to boost topic-overlap for Hinglish speakers who transliterate the
@@ -81,7 +107,7 @@ const MEDICAL_SYNONYMS: Record<string, string[]> = {
   tamoxifen:    ["tamox", "tamoksifen"],
   hormone:      ["hormon"],
   surgery:      ["surgeri", "sarjari", "operation"],
-  nausea:       ["nausiya", "ulti", "ji machlana"],
+  nausea:       ["nausiya", "ji machlana"],
   pain:         ["dard", "durd", "takleef", "peeda"],
   doctor:       ["daktar", "doc"],
   fatigue:      ["thakan", "kamzori", "weakness"],
@@ -105,7 +131,8 @@ const MEDICAL_SYNONYMS: Record<string, string[]> = {
 
 const EXPERIENTIAL_PATTERNS = [
   "i had", "for me", "in my case", "my doctor", "my oncologist",
-  "i was on", "i am on", "same here", "i too", "mujhe bhi",
+  "i was on", "i am on", "i'm on", "im on", "m on ",
+  "same here", "i too", "mujhe bhi",
   "mere liye", "mera doctor", "mere saath", "meri mummy", "meri mom",
   "i experienced", "i went through", "i was given", "i took",
   "it happened to me", "i also had", "i also felt", "when i had",
@@ -179,8 +206,10 @@ let SPAM_CONTENT_MARKERS = ["Designs that listen.."];
 // These score-based thresholds are recomputed per-run by computeAdaptiveThresholds()
 // using percentiles of the actual score distribution, with hard floors to prevent
 // garbage days from producing garbage threads.
-let HARD_WINDOW_MS    = 5 * 60 * 60 * 1000;
-let GAP_NEW_THREAD_MS = 90 * 60 * 1000;
+const DEFAULT_HARD_WINDOW_MS    = 5 * 60 * 60 * 1000;
+const DEFAULT_GAP_NEW_THREAD_MS = 90 * 60 * 1000;
+let HARD_WINDOW_MS    = DEFAULT_HARD_WINDOW_MS;
+let GAP_NEW_THREAD_MS = DEFAULT_GAP_NEW_THREAD_MS;
 const ATTACH_THRESHOLD  = 0.35;
 const SPLIT_THRESHOLD   = 0.20;
 const SOFT_REPLY_CAP    = 15;
@@ -205,7 +234,7 @@ const NEAR_THREAD_WINDOW_MS  = 30 * 60 * 1000;  // 30 minutes
 
 // Backward-looking reply attachment: second pass over unattached messages
 const BACKWARD_WINDOW_MS         = 3 * 60 * 60 * 1000;  // 3h window
-const BACKWARD_ATTACH_THRESHOLD  = 0.30;                 // slightly lower than forward 0.35
+const BACKWARD_ATTACH_THRESHOLD  = 0.35;                 // match forward-pass ATTACH_THRESHOLD
 let BACKWARD_MIN_SCORE         = 20;                   // low floor OK — backward pass has its own overlap gate (0.30)
 
 // ─── Adaptive Threshold Computation ──────────────────────────────────────────
@@ -220,7 +249,7 @@ function computeAdaptiveThresholds(scores: number[], verbose = false): void {
   // Filter out pure noise (score 0-10) to avoid skewing percentiles
   const meaningful = scores.filter(s => s > 10).sort((a, b) => a - b);
 
-  if (meaningful.length < 5) {
+  if (meaningful.length < 3) {
     if (verbose) console.log("  [ADAPTIVE] Too few meaningful scores — keeping defaults");
     return;
   }
@@ -260,11 +289,36 @@ function computeAdaptiveWindows(messages: WaMessage[], verbose = false): void {
   const sorted = messages.map(m => m.timestamp.getTime()).sort((a, b) => a - b);
   const first = sorted[0] ?? 0;
   const last  = sorted[sorted.length - 1] ?? 0;
-  const spanHours = (last - first) / (1000 * 60 * 60);
+  const totalSpanHours = (last - first) / (1000 * 60 * 60);
 
-  if (spanHours < 0.5) return; // too short to compute meaningful density
+  if (totalSpanHours < 0.5) return;
 
-  const msgsPerHour = messages.length / spanHours;
+  // Compute density over active segments only (split at gaps > 60min)
+  // to avoid diluting density when messages cluster in a few active windows.
+  const GAP_SPLIT = 60 * 60 * 1000;
+  const segDensities: number[] = [];
+  let segStart = sorted[0] ?? 0;
+  let segCount = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1] ?? 0;
+    const curr = sorted[i] ?? 0;
+    if (curr - prev > GAP_SPLIT) {
+      const segHours = (prev - segStart) / (1000 * 60 * 60);
+      if (segHours > 0.1) segDensities.push(segCount / segHours);
+      segStart = curr;
+      segCount = 0;
+    }
+    segCount++;
+  }
+  // Final segment
+  const lastTs = sorted[sorted.length - 1] ?? 0;
+  const lastSegHours = (lastTs - segStart) / (1000 * 60 * 60);
+  if (lastSegHours > 0.1) segDensities.push(segCount / lastSegHours);
+
+  // Use median segment density; fall back to raw average if no valid segments
+  const msgsPerHour = segDensities.length > 0
+    ? segDensities.sort((a, b) => a - b)[Math.floor(segDensities.length / 2)] ?? messages.length / totalSpanHours
+    : messages.length / totalSpanHours;
 
   // Scale windows based on density:
   //   < 5 msg/hr  → slow chat: widen windows (180min gap, 8hr hard)
@@ -280,7 +334,7 @@ function computeAdaptiveWindows(messages: WaMessage[], verbose = false): void {
   // else: keep defaults (90min gap, 5hr hard)
 
   if (verbose) {
-    console.log(`  [DENSITY] ${messages.length} msgs over ${spanHours.toFixed(1)}h → ${msgsPerHour.toFixed(1)} msg/hr`);
+    console.log(`  [DENSITY] ${messages.length} msgs, ${segDensities.length} active segments → ${msgsPerHour.toFixed(1)} msg/hr (median)`);
     console.log(`    → GAP=${GAP_NEW_THREAD_MS / 60000}min HARD=${HARD_WINDOW_MS / 3600000}hr`);
   }
 }
@@ -329,8 +383,7 @@ function sha256(s: string): string {
 }
 
 function toPseudonym(sender: string): string {
-  const isDoctor = sender.startsWith("Dr.") || sender.startsWith("Dr ");
-  const prefix = isDoctor ? "wa_doctor" : "wa_member";
+  const prefix = isDoctor(sender) ? "wa_doctor" : "wa_member";
   return `${prefix}_${sha256(sender.toLowerCase()).slice(0, 8)}`;
 }
 
@@ -429,9 +482,9 @@ function parse(lines: string[]): { messages: WaMessage[]; failures: number } {
     }
   }
 
-  if (timestampedLines > 0 && failures / timestampedLines > 0.01) {
+  if (timestampedLines > 0 && failures / timestampedLines > 0.03) {
     throw new Error(
-      `Parse failure rate ${((failures / timestampedLines) * 100).toFixed(1)}% exceeds 1% threshold`
+      `Parse failure rate ${((failures / timestampedLines) * 100).toFixed(1)}% exceeds 3% threshold`
     );
   }
 
@@ -491,20 +544,52 @@ function filterNoise(messages: WaMessage[], spamRules: SpamSenderRule[]): WaMess
   });
 }
 
+// ─── Embedding utilities ─────────────────────────────────────────────────────
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    dot += ai * bi;
+    magA += ai * ai;
+    magB += bi * bi;
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
 // ─── Phase 3: Relevance Scoring ───────────────────────────────────────────────
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(Math.max(n, lo), hi);
 }
 
-function scoreRelevance(msg: WaMessage): number {
-  const lower = msg.body.toLowerCase();
+// Expands Hinglish synonyms into their canonical English terms so that
+// scoreRelevance() category matching works for transliterated messages.
+function expandSynonyms(text: string): string {
+  const lower = text.toLowerCase();
+  const expansions: string[] = [];
+  for (const [canonical, variants] of Object.entries(MEDICAL_SYNONYMS)) {
+    if (variants.some(v => lower.includes(v))) {
+      expansions.push(canonical);
+    }
+  }
+  return expansions.length > 0 ? lower + " " + expansions.join(" ") : lower;
+}
+
+function scoreRelevance(
+  msg: WaMessage,
+  embMap?: Map<string, number[]>,
+  refVecs?: number[][],
+): number {
+  const lower = normalizeSpaces(expandSynonyms(msg.body));
   let score = 0;
 
   // Count unique semantic *categories* hit, not unique list entries, so
   // "chemo" + "chemotherapy" in the same message count as one signal.
   const categoryHits = TERM_CATEGORIES.filter(cat => cat.some(t => lower.includes(t))).length;
-  score += Math.min(categoryHits * 12, 36);
+  score += Math.min(categoryHits * 12, 48);
 
   // Density bonus: listing multiple distinct side effects is more substantive than one.
   const sideEffectHits = SIDE_EFFECT_TERMS.filter(t => lower.includes(t)).length;
@@ -519,6 +604,16 @@ function scoreRelevance(msg: WaMessage): number {
   if (SUPPORT_SEEKING_PATTERNS.some(p => lower.includes(p))) score += 15;
   if (RECOMMENDATION_PATTERNS.some(p => lower.includes(p))) score += 10;
 
+  // Embedding-based relevance: cosine similarity to reference medical topics.
+  // Catches semantically relevant messages that use no mapped keywords.
+  if (embMap && refVecs && refVecs.length > 0) {
+    const msgVec = embMap.get(msg.body);
+    if (msgVec) {
+      const maxCos = Math.max(...refVecs.map(rv => cosineSimilarity(msgVec, rv)));
+      if (maxCos > 0.5) score += 15;
+    }
+  }
+
   // Penalties
   if (msg.body.trim().length < 20 && categoryHits === 0) score -= 10;
   if (/^(thank|thanks|ok|okay|noted|sure|yes|no|👍|🙏|great|good)\W*$/i.test(msg.body.trim())) {
@@ -526,7 +621,7 @@ function scoreRelevance(msg: WaMessage): number {
   }
 
   // Doctor-authored messages carry authoritative weight.
-  if (msg.sender.startsWith("Dr.") || msg.sender.startsWith("Dr ")) score += 15;
+  if (isDoctor(msg.sender)) score += 15;
 
   return clamp(score, 0, 100);
 }
@@ -539,8 +634,7 @@ async function resolveUser(sender: string): Promise<string> {
   const cached = userCache.get(sender);
   if (cached) return cached;
 
-  const isDoctor = sender.startsWith("Dr.") || sender.startsWith("Dr ");
-  const prefix   = isDoctor ? "wa_doctor" : "wa_member";
+  const prefix   = isDoctor(sender) ? "wa_doctor" : "wa_member";
   const hash8    = sha256(sender.toLowerCase()).slice(0, 8);
   const username = `${prefix}_${hash8}`;
   const email    = `${username}@hac.internal`;
@@ -583,17 +677,33 @@ function medicalCategorySet(s: string): Set<string> {
   return hits;
 }
 
-// Blends lexical Jaccard (60%) with medical-category Jaccard (40%) so that
-// Hinglish synonyms of the same concept boost overlap even with 0 lexical match.
-function topicOverlap(a: string, b: string): number {
-  const lexA = tokenize(a);
-  const lexB = tokenize(b);
-  const lexJaccard = (() => {
-    if (lexA.size === 0 || lexB.size === 0) return 0;
-    const inter = [...lexA].filter(t => lexB.has(t)).length;
-    return inter / new Set([...lexA, ...lexB]).size;
-  })();
+// Blends semantic similarity (60%) with medical-category Jaccard (40%).
+// When embeddings are available, the 60% component is normalized cosine similarity;
+// otherwise falls back to lexical Jaccard (keyword-only mode).
+// `a` is the thread context string (anchor + recent replies) used for keyword matching.
+// `embKeyA` is the anchor body used for embedding lookup (since context strings aren't embedded).
+function topicOverlap(a: string, b: string, embMap?: Map<string, number[]>, embKeyA?: string): number {
+  // 60% component: cosine similarity (normalized) or lexical Jaccard fallback
+  let semanticScore: number;
+  const vecA = embMap?.get(embKeyA ?? a);
+  const vecB = embMap?.get(b);
+  if (vecA && vecB) {
+    // e5-base-v2 cosine range is ~[0.7, 1.0] — normalize to [0, 1]
+    const rawCos = cosineSimilarity(vecA, vecB);
+    semanticScore = clamp((rawCos - 0.75) / 0.20, 0, 1);
+  } else {
+    // Fallback: lexical Jaccard
+    const lexA = tokenize(a);
+    const lexB = tokenize(b);
+    if (lexA.size === 0 || lexB.size === 0) {
+      semanticScore = 0;
+    } else {
+      const inter = [...lexA].filter(t => lexB.has(t)).length;
+      semanticScore = inter / new Set([...lexA, ...lexB]).size;
+    }
+  }
 
+  // Medical-category Jaccard (always keyword-based, uses full context string)
   const medA = medicalCategorySet(a);
   const medB = medicalCategorySet(b);
   const medJaccard = (() => {
@@ -602,7 +712,13 @@ function topicOverlap(a: string, b: string): number {
     return inter / new Set([...medA, ...medB]).size;
   })();
 
-  return 0.6 * lexJaccard + 0.4 * medJaccard;
+  // Shift weights when Hinglish is detected — embeddings (e5-base-v2) are
+  // English-biased and produce near-zero similarity for Hindi text.
+  const hinglish = detectLanguage(a) === "hinglish" || detectLanguage(b) === "hinglish";
+  const semWeight = hinglish ? 0.35 : 0.6;
+  const medWeight = hinglish ? 0.65 : 0.4;
+
+  return semWeight * semanticScore + medWeight * medJaccard;
 }
 
 function threadContextStr(t: { anchor: ScoredMessage; replies: ScoredMessage[] }): string {
@@ -615,6 +731,41 @@ function senderBonus(msg: ScoredMessage, t: { anchor: ScoredMessage; replies: Sc
   const recentRepliers = t.replies.slice(-3).map(r => r.sender);
   if (recentRepliers.includes(msg.sender)) return SENDER_BONUS_REPLIER;
   return 0;
+}
+
+function normalizeSpaces(s: string): string {
+  return s.replace(/\s+/g, " ");
+}
+
+function hasSharedCategories(textA: string, textB: string, maxCats = TERM_CATEGORIES.length): boolean {
+  const lowerA = normalizeSpaces(textA.toLowerCase());
+  const lowerB = normalizeSpaces(textB.toLowerCase());
+  return TERM_CATEGORIES.slice(0, maxCats).some(cat => {
+    const hitA = cat.some(t => lowerA.includes(t));
+    const hitB = cat.some(t => lowerB.includes(t));
+    return hitA && hitB;
+  });
+}
+
+// SIDE_EFFECT ↔ REMEDY are related: a reply mentioning a remedy for a thread
+// discussing a side effect (or vice versa) is a strong topical signal.
+const RELATED_CATEGORY_PAIRS: [number, number][] = [
+  [TERM_CATEGORIES.indexOf(SIDE_EFFECT_TERMS), TERM_CATEGORIES.indexOf(REMEDY_TERMS)],
+  [TERM_CATEGORIES.indexOf(CARE_TERMS), TERM_CATEGORIES.indexOf(REMEDY_TERMS)],
+];
+
+function hasRelatedCategories(textA: string, textB: string): boolean {
+  const lowerA = normalizeSpaces(textA.toLowerCase());
+  const lowerB = normalizeSpaces(textB.toLowerCase());
+  const hitsA = new Set(
+    TERM_CATEGORIES.map((cat, i) => cat.some(t => lowerA.includes(t)) ? i : -1).filter(i => i >= 0)
+  );
+  const hitsB = new Set(
+    TERM_CATEGORIES.map((cat, i) => cat.some(t => lowerB.includes(t)) ? i : -1).filter(i => i >= 0)
+  );
+  return RELATED_CATEGORY_PAIRS.some(([a, b]) =>
+    (hitsA.has(a) && hitsB.has(b)) || (hitsA.has(b) && hitsB.has(a))
+  );
 }
 
 function isQuestionLike(msg: ScoredMessage): boolean {
@@ -639,17 +790,17 @@ function isShortContextualReply(msg: ScoredMessage): boolean {
     SHORT_CONTEXTUAL_REPLY_PATTERNS.some(p => p.test(trimmed));
 }
 
-function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage[] }): number {
+function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage[] }, embMap?: Map<string, number[]>): number {
   const anchorScore = t.anchor.relevanceScore;
   const subst       = t.replies.filter(r => r.relevanceScore >= MIN_RELEVANCE);
   const avgReply    = subst.length > 0
     ? subst.reduce((s, r) => s + r.relevanceScore, 0) / subst.length
     : 0;
   const avgOverlap  = subst.length > 0
-    ? subst.reduce((s, r) => s + topicOverlap(t.anchor.body, r.body), 0) / subst.length
+    ? subst.reduce((s, r) => s + topicOverlap(t.anchor.body, r.body, embMap, t.anchor.body), 0) / subst.length
     : 0;
   const replyRatio  = Math.min(subst.length / 5, 1.0);
-  const doctorPresent = subst.some(r => r.sender.startsWith("Dr.") || r.sender.startsWith("Dr "));
+  const doctorPresent = subst.some(r => isDoctor(r.sender));
   const doctorBonus   = doctorPresent ? 10 : 0;
 
   return clamp(
@@ -659,7 +810,7 @@ function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage
 }
 
 
-function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads: WaThread[]; backwardAttached: number } {
+function reconstructThreads(scored: ScoredMessage[], verbose = false, embMap?: Map<string, number[]>): { threads: WaThread[]; backwardAttached: number } {
   interface ActiveThread {
     anchor: ScoredMessage;
     replies: ScoredMessage[];
@@ -675,27 +826,27 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
       anchor: t.anchor,
       replies: t.replies,
       waThreadKey: t.anchor.waMessageKey,
-      threadConfidence: calcThreadConfidence(t),
+      threadConfidence: calcThreadConfidence(t, embMap),
     });
   }
 
-  function evictOldest(): void {
-    let oldestIdx = 0;
-    for (let i = 1; i < active.length; i++) {
-      if ((active[i]?.anchor.timestamp.getTime() ?? Infinity) <
-          (active[oldestIdx]?.anchor.timestamp.getTime() ?? Infinity)) {
-        oldestIdx = i;
-      }
+  function evictWeakest(): void {
+    let weakIdx = 0;
+    let weakScore = Infinity;
+    for (let i = 0; i < active.length; i++) {
+      const t = active[i]!;
+      const score = t.anchor.relevanceScore + t.replies.length * 5;
+      if (score < weakScore) { weakScore = score; weakIdx = i; }
     }
-    const oldest = active[oldestIdx];
-    if (oldest) { finalize(oldest); active.splice(oldestIdx, 1); }
+    const weakest = active[weakIdx];
+    if (weakest) { finalize(weakest); active.splice(weakIdx, 1); }
   }
 
   for (const msg of scored) {
     if (msg.relevanceScore < MIN_RELEVANCE) {
       // Short contextual replies (yes, same here, etc.) attach by time proximity
       // to the most recently active thread — they cannot anchor a new one.
-      if (isShortContextualReply(msg) && active.length > 0) {
+      if (isShortContextualReply(msg) && active.length > 0 && msg.relevanceScore >= NEAR_THREAD_RELAXED_MIN) {
         const now = msg.timestamp.getTime();
         const best = active.reduce((a, b) => a.lastTime > b.lastTime ? a : b);
         if (now - best.lastTime <= GAP_NEW_THREAD_MS) {
@@ -713,22 +864,17 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
           // For near-thread relaxation, time proximity is the main signal.
           // Require any shared medical category OR sender match — not Jaccard overlap,
           // which is too low for short conversational replies.
-          const ctxLower = threadContextStr(recentThread).toLowerCase();
-          const msgLower2 = msg.body.toLowerCase();
-          // Only match on specific categories (treatment, scans, side effects, symptoms)
-          // — exclude care terms (index 4) which are too generic and cross-match unrelated threads
-          const hasAnyCategoryMatch = TERM_CATEGORIES.slice(0, 4).some(cat => {
-            const msgHit = cat.some(t => msgLower2.includes(t));
-            const ctxHit = cat.some(t => ctxLower.includes(t));
-            return msgHit && ctxHit;
-          });
+          // Match on medical + care categories (treatment, scans, side effects, symptoms, care)
+          // — within 30min window, time proximity constrains false positives
+          const ctx = threadContextStr(recentThread);
+          const hasAnyCategoryMatch = hasSharedCategories(msg.body, ctx, 5);
+          const hasRelated = hasRelatedCategories(msg.body, ctx);
           const hasSender = senderBonus(msg, recentThread) > 0;
-          const isDoctor = msg.sender.startsWith("Dr.") || msg.sender.startsWith("Dr ");
-          const shouldAttach = hasAnyCategoryMatch || hasSender || isDoctor;
+          const shouldAttach = hasAnyCategoryMatch || hasRelated || hasSender || isDoctor(msg.sender);
           if (verbose) {
             const gap = now - recentThread.lastTime;
             console.log(
-              `    [RELAX] catMatch=${hasAnyCategoryMatch} sender=${hasSender} doctor=${isDoctor} ` +
+              `    [RELAX] catMatch=${hasAnyCategoryMatch} related=${hasRelated} sender=${hasSender} doctor=${isDoctor(msg.sender)} ` +
               `gap=${Math.round(gap / 60000)}min score=${msg.relevanceScore} ` +
               `${shouldAttach ? "→ATTACH" : "→SKIP"} ` +
               `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
@@ -801,12 +947,12 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
     const first = active[0];
     if (!first) continue;
     let bestIdx       = 0;
-    let bestRawOv     = topicOverlap(threadContextStr(first), msg.body);
+    let bestRawOv     = topicOverlap(threadContextStr(first), msg.body, embMap, first.anchor.body);
     let bestEffective = bestRawOv + senderBonus(msg, first);
     for (let i = 1; i < active.length; i++) {
       const t = active[i];
       if (!t) continue;
-      const rawOv = topicOverlap(threadContextStr(t), msg.body);
+      const rawOv = topicOverlap(threadContextStr(t), msg.body, embMap, t.anchor.body);
       const effOv = rawOv + senderBonus(msg, t);
       if (effOv > bestEffective) { bestRawOv = rawOv; bestEffective = effOv; bestIdx = i; }
     }
@@ -835,37 +981,37 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
         unattached.push(msg);
       }
 
-    } else if (bestEffective < SPLIT_THRESHOLD && (question || seeking) && independent) {
-      if (active.length >= 3) evictOldest();
+    } else if (bestEffective < SPLIT_THRESHOLD && canAnchor && independent) {
+      if (active.length >= 3) evictWeakest();
       active.push({ anchor: msg, replies: [], lastTime: now });
 
     } else {
       // Middle band — require extra signal before attaching
       const gap = now - best.lastTime;
-      if (gap > GAP_NEW_THREAD_MS && (question || seeking) && independent) {
-        if (active.length >= 3) evictOldest();
+      if (gap > GAP_NEW_THREAD_MS && canAnchor && independent) {
+        if (active.length >= 3) evictWeakest();
         active.push({ anchor: msg, replies: [], lastTime: now });
+
+      // A+E: strong anchor candidates in MIDDLE band prefer SPLIT unless overlap
+      // reaches full ATTACH level — high-score messages are valuable enough to
+      // start their own thread rather than being absorbed by a loosely related one.
+      } else if (canAnchor && independent && bestEffective < ATTACH_THRESHOLD) {
+        if (active.length >= 3) evictWeakest();
+        active.push({ anchor: msg, replies: [], lastTime: now });
+
       } else if (msg.relevanceScore >= MIN_RELEVANCE) {
+        const bestCtx = threadContextStr(best);
         const hasHighRelevance = msg.relevanceScore >= MIDDLE_BAND_MIN_SCORE;
-        const hasSharedMedical = (() => {
-          // Check shared categories using TERM_CATEGORIES (the full term list),
-          // not medicalCategorySet (which only covers the Hinglish synonym map).
-          const msgCats = new Set(
-            TERM_CATEGORIES.map((cat, i) => cat.some(t => msg.body.toLowerCase().includes(t)) ? i : -1)
-              .filter(i => i >= 0)
-          );
-          if (msgCats.size === 0) return false;
-          const ctxLower = threadContextStr(best).toLowerCase();
-          const threadCats = new Set(
-            TERM_CATEGORIES.map((cat, i) => cat.some(t => ctxLower.includes(t)) ? i : -1)
-              .filter(i => i >= 0)
-          );
-          return [...msgCats].some(i => threadCats.has(i));
-        })();
+        const hasSharedMedical = hasSharedCategories(msg.body, bestCtx);
         const hasSenderMatch = senderBonus(msg, best) > 0;
         const hasRecentActivity = (now - best.lastTime) <= MIDDLE_BAND_RECENCY_MS;
+        const hasRelated = hasRelatedCategories(msg.body, bestCtx);
 
-        if (hasHighRelevance || hasSharedMedical || hasSenderMatch || hasRecentActivity) {
+        const hasHighWithOverlap = hasHighRelevance && bestEffective >= 0.16;
+        const hasRecentWithOverlap = hasRecentActivity && bestEffective >= 0.25;
+        const hasMedicalWithOverlap = hasSharedMedical && bestEffective >= 0.20;
+        const hasRelatedWithRecency = hasRelated && hasRecentActivity;
+        if (hasHighWithOverlap || hasMedicalWithOverlap || hasSenderMatch || hasRecentWithOverlap || hasRelatedWithRecency || isDoctor(msg.sender)) {
           best.replies.push(msg);
           best.lastTime = now;
         } else {
@@ -892,7 +1038,7 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
       if (msgTime - anchorTime > BACKWARD_WINDOW_MS) continue;
 
       const ctx = t.anchor.body + " " + t.replies.slice(-3).map(r => r.body).join(" ");
-      let ov = topicOverlap(ctx, msg.body);
+      let ov = topicOverlap(ctx, msg.body, embMap, t.anchor.body);
       ov += senderBonus(msg, t);
 
       if (ov > bestOv) { bestOv = ov; bestThread = t; }
@@ -901,7 +1047,7 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false): { threads
     if (bestThread && bestOv >= BACKWARD_ATTACH_THRESHOLD) {
       bestThread.replies.push(msg);
       bestThread.replies.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      bestThread.threadConfidence = calcThreadConfidence(bestThread);
+      bestThread.threadConfidence = calcThreadConfidence(bestThread, embMap);
       backwardCount++;
     }
   }
@@ -1031,33 +1177,15 @@ async function main(): Promise<void> {
   const args    = process.argv.slice(2);
   const dryRun  = args.includes("--dry-run");
   const verbose = args.includes("--verbose");
+  const noEmbed = args.includes("--no-embed");
 
-  const linesIdx = args.indexOf("--lines");
-  const linesArg = linesIdx !== -1
-    ? args[linesIdx + 1]
-    : args.find(a => a.startsWith("--lines="))?.slice("--lines=".length);
-
-  const dateIdx = args.indexOf("--date");
-  const dateArg = dateIdx !== -1
-    ? args[dateIdx + 1]
-    : args.find(a => a.startsWith("--date="))?.slice("--date=".length);
-
-  const fileIdx = args.indexOf("--file");
-  const fileArg = fileIdx !== -1
-    ? args[fileIdx + 1]
-    : args.find(a => a.startsWith("--file="))?.slice("--file=".length);
-
-  // --spam-senders: comma-separated sender names to drop all messages from
-  const spamSendersIdx = args.indexOf("--spam-senders");
-  const spamSendersArg = spamSendersIdx !== -1
-    ? args[spamSendersIdx + 1]
-    : args.find(a => a.startsWith("--spam-senders="))?.slice("--spam-senders=".length);
-
-  // --spam-markers: comma-separated content prefixes to filter
-  const spamMarkersIdx = args.indexOf("--spam-markers");
-  const spamMarkersArg = spamMarkersIdx !== -1
-    ? args[spamMarkersIdx + 1]
-    : args.find(a => a.startsWith("--spam-markers="))?.slice("--spam-markers=".length);
+  const linesArg       = parseArg(args, "lines");
+  const dateArg        = parseArg(args, "date");
+  const weekArg        = parseArg(args, "week");
+  const monthArg       = parseArg(args, "month");
+  const fileArg        = parseArg(args, "file");
+  const spamSendersArg = parseArg(args, "spam-senders");
+  const spamMarkersArg = parseArg(args, "spam-markers");
 
   // Build spam rules: defaults + CLI overrides
   const spamRules: SpamSenderRule[] = [...DEFAULT_SPAM_SENDER_RULES];
@@ -1071,6 +1199,50 @@ async function main(): Promise<void> {
     SPAM_CONTENT_MARKERS = spamMarkersArg.split(",").map(s => s.trim()).filter(Boolean);
   }
 
+  // Compute date list for --week: 7 consecutive days starting from the given date
+  function weekDates(start: string): string[] {
+    const [dd, mm, yy] = start.split("/").map(Number);
+    if (dd === undefined || mm === undefined || yy === undefined) {
+      throw new Error(`Invalid --week date format: ${start} (expected DD/MM/YY)`);
+    }
+    const base = new Date(2000 + yy, mm - 1, dd);
+    const dates: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      const day = d.getDate().toString().padStart(2, "0");
+      const mon = (d.getMonth() + 1).toString().padStart(2, "0");
+      const yr  = (d.getFullYear() - 2000).toString().padStart(2, "0");
+      dates.push(`${day}/${mon}/${yr}`);
+    }
+    return dates;
+  }
+
+  function monthDates(start: string): string[] {
+    const [dd, mm, yy] = start.split("/").map(Number);
+    if (dd === undefined || mm === undefined || yy === undefined) {
+      throw new Error(`Invalid --month date format: ${start} (expected DD/MM/YY)`);
+    }
+    const base = new Date(2000 + yy, mm - 1, dd);
+    const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+    const remaining = daysInMonth - dd + 1;
+    const dates: string[] = [];
+    for (let i = 0; i < remaining; i++) {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      const day = d.getDate().toString().padStart(2, "0");
+      const mon = (d.getMonth() + 1).toString().padStart(2, "0");
+      const yr  = (d.getFullYear() - 2000).toString().padStart(2, "0");
+      dates.push(`${day}/${mon}/${yr}`);
+    }
+    return dates;
+  }
+
+  const datesToProcess = monthArg ? monthDates(monthArg)
+    : weekArg ? weekDates(weekArg)
+    : dateArg ? [dateArg]
+    : [undefined];
+
   const chatPath = fileArg
     ? resolve(fileArg)
     : resolve(process.cwd(), "../_chat.txt");
@@ -1079,20 +1251,37 @@ async function main(): Promise<void> {
   if (dryRun) console.log("Mode: dry-run (no DB writes)\n");
 
   const raw = readFileSync(chatPath, "utf-8");
-  let lines = normalize(raw);
+  const allLines = normalize(raw);
 
-  if (dateArg) {
-    const prefix = `[${dateArg}`;
+  for (const currentDate of datesToProcess) {
+  // Reset density-adaptive windows to defaults so each day starts fresh
+  GAP_NEW_THREAD_MS = DEFAULT_GAP_NEW_THREAD_MS;
+  HARD_WINDOW_MS    = DEFAULT_HARD_WINDOW_MS;
+
+  let lines: string[];
+  if (currentDate) {
+    const prefix = `[${currentDate}`;
     const dateLines: string[] = [];
     let inDate = false;
-    for (const line of lines) {
+    for (const line of allLines) {
       if (line.startsWith("[")) {
         inDate = line.startsWith(prefix);
       }
       if (inDate) dateLines.push(line);
     }
     lines = dateLines;
-    console.log(`Filtered to date ${dateArg} (${lines.length} lines)\n`);
+    if (datesToProcess.length > 1) {
+      console.log(`\n${"═".repeat(60)}`);
+      console.log(`  ${currentDate}`);
+      console.log(`${"═".repeat(60)}`);
+    }
+    console.log(`Filtered to date ${currentDate} (${lines.length} lines)\n`);
+    if (lines.length === 0) {
+      console.log("  No messages for this date — skipping.\n");
+      continue;
+    }
+  } else {
+    lines = allLines;
   }
 
   if (linesArg) {
@@ -1121,9 +1310,41 @@ async function main(): Promise<void> {
   // ── Adaptive time windows ──
   computeAdaptiveWindows(filtered, verbose);
 
+  // ── Embed ──
+  // Batch-embed all message bodies + reference topics in a single API call.
+  // Map is keyed by raw body text so topicOverlap() can look up any string.
+  let embMap: Map<string, number[]> | undefined;
+  let refVecs: number[][] | undefined;
+
+  if (!noEmbed) {
+    const uniqueBodies = [...new Set(filtered.map(m => m.body))];
+    const allTexts = [...uniqueBodies, ...REFERENCE_TOPICS];
+    const prefixed = allTexts.map(t => "passage: " + t);
+
+    console.log(`\n  Embedding ${uniqueBodies.length} messages + ${REFERENCE_TOPICS.length} reference topics...`);
+    try {
+      const vectors = await embeddingsModel.embedDocuments(prefixed);
+      embMap = new Map<string, number[]>();
+      for (let i = 0; i < allTexts.length; i++) {
+        const text = allTexts[i];
+        const vec = vectors[i];
+        if (text !== undefined && vec !== undefined) {
+          embMap.set(text, vec);
+        }
+      }
+      refVecs = REFERENCE_TOPICS.map(t => embMap!.get(t)).filter((v): v is number[] => v !== undefined);
+      console.log(`  Embedded ${embMap.size} texts (${vectors[0]?.length ?? "?"} dims)`);
+    } catch (err) {
+      console.log(`  Embedding failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.log("  Falling back to keyword-only mode");
+      embMap = undefined;
+      refVecs = undefined;
+    }
+  }
+
   // ── Score ──
   const scored: ScoredMessage[] = filtered.map(m => ({
-    ...m, relevanceScore: scoreRelevance(m),
+    ...m, relevanceScore: scoreRelevance(m, embMap, refVecs),
   }));
 
   // ── Adaptive thresholds ──
@@ -1156,7 +1377,7 @@ async function main(): Promise<void> {
       if (EXPERIENTIAL_PATTERNS.some(p => lower.includes(p))) signals.push("experiential");
       if (SUPPORT_SEEKING_PATTERNS.some(p => lower.includes(p))) signals.push("seeking");
       if (RECOMMENDATION_PATTERNS.some(p => lower.includes(p))) signals.push("recommend");
-      if (m.sender.startsWith("Dr.") || m.sender.startsWith("Dr ")) signals.push("doctor");
+      if (isDoctor(m.sender)) signals.push("doctor");
       if (m.body.trim().length < 20 && cats.length === 0) signals.push("short-penalty");
       if (/^(thank|thanks|ok|okay|noted|sure|yes|no|👍|🙏|great|good)\W*$/i.test(m.body.trim())) signals.push("ack-penalty");
 
@@ -1170,7 +1391,7 @@ async function main(): Promise<void> {
   }
 
   // ── Thread reconstruction (runs in both dry-run and live mode) ──
-  const { threads, backwardAttached } = reconstructThreads(scored, verbose);
+  const { threads, backwardAttached } = reconstructThreads(scored, verbose, embMap);
   stats.backwardAttached = backwardAttached;
 
   // Shared publish-gate helper so tStats, dry-run preview, and live seed loop
@@ -1200,8 +1421,8 @@ async function main(): Promise<void> {
 
   console.log("\n── Threading ───────────────────────────────────");
   console.log(`  Threads total:                   ${threads.length}`);
-  console.log(`  Auto-publish (conf≥75 | 0-reply): ${tStats.autoPublish}`);
-  console.log(`  QA review    (conf 55–74):         ${tStats.qa}`);
+  console.log(`  Auto-publish (conf≥${AUTO_PUBLISH_CONF} | 0-reply): ${tStats.autoPublish}`);
+  console.log(`  QA review    (conf ${QA_CONF}–${AUTO_PUBLISH_CONF - 1}):         ${tStats.qa}`);
   console.log(`  Skipped:                           ${tStats.skip}`);
   console.log(`  Backward-attached replies:         ${stats.backwardAttached}`);
 
@@ -1224,7 +1445,7 @@ async function main(): Promise<void> {
       if (i === 7 && threads.length > 8) console.log(`  … and ${threads.length - 8} more`);
     });
     console.log("\nDry-run complete — no DB writes.");
-    return;
+    continue;
   }
 
   // ── ImportRun ──
@@ -1291,6 +1512,8 @@ async function main(): Promise<void> {
   console.log(`  Skipped (dupes):     ${stats.skippedDuplicates}`);
   console.log(`  QA review threads:   ${stats.qaReviewThreads}`);
   console.log("\nDone. Run `pnpm dev:worker` to process the Pinecone ingestion queue.");
+
+  } // end for (const currentDate of datesToProcess)
 
   await redisConnection.quit();
 }
