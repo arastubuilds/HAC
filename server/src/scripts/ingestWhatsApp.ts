@@ -19,7 +19,9 @@
 import { createHash } from "crypto";
 import { readFileSync, writeFileSync } from "fs";
 import { basename, resolve } from "path";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { embeddingsModel } from "../infra/embeddings.js";
+import { llm } from "../infra/llm.js";
 import { prisma } from "../infra/prisma.js";
 import { redisConnection } from "../infra/redis.js";
 import { enqueuePostIngest } from "../queues/postIngest.queue.js";
@@ -52,6 +54,7 @@ interface WaMessage {
 
 interface ScoredMessage extends WaMessage {
   relevanceScore: number;
+  categoryHits: number;  // keyword-matched medical categories (word-boundary safe)
 }
 
 interface WaThread {
@@ -159,6 +162,19 @@ const SHORT_CONTEXTUAL_REPLY_PATTERNS = [
   /^(mera bhi|mere saath bhi|mere bhi)\b/i,
   /^(try karo|try karna|try kar)\b/i,
   /^(correct|right|true)\b/i,
+];
+
+// Back-reference openers: phrases that signal the message is directly responding
+// to whatever was just asked, even when token overlap is near zero.
+const BACK_REFERENCE_PATTERNS = [
+  /^i also had\b/i,
+  /^i had (the )?same\b/i,
+  /^i (too|also) (had|have|faced|experienced)\b/i,
+  /^same (issue|problem|experience|thing|here)\b/i,
+  /^similar (issue|problem|experience)\b/i,
+  /^mujhe bhi\b/i,
+  /^mere saath bhi\b/i,
+  /^hamara bhi\b/i,
 ];
 
 const HINGLISH_MARKERS = [
@@ -540,6 +556,18 @@ function filterNoise(messages: WaMessage[], spamRules: SpamSenderRule[]): WaMess
     const hasEventKeyword = ["join", "meeting", "register", "webinar", "support group"].some(k => lower.includes(k));
     if (hasMeetingUrl && hasEventKeyword) return false;
 
+    // Social media reel / link forwards that are purely motivational or art-related.
+    // Keep them only if they contain at least one medical term (e.g. a doctor sharing
+    // a cancer-specific reel).
+    const hasSocialUrl = /instagram\.com|youtu\.be|youtube\.com|facebook\.com|twitter\.com|t\.co\//.test(lower);
+    if (hasSocialUrl) {
+      const bodyWithoutUrl = trimmed.replace(/https?:\/\/\S+/g, " ").trim();
+      const hasMedContent = TERM_CATEGORIES.some(cat =>
+        cat.some(t => matchesMedTerm(bodyWithoutUrl.toLowerCase(), t))
+      );
+      if (!hasMedContent) return false;
+    }
+
     return true;
   });
 }
@@ -578,21 +606,34 @@ function expandSynonyms(text: string): string {
   return expansions.length > 0 ? lower + " " + expansions.join(" ") : lower;
 }
 
+// Word-boundary safe medical term check. Prevents "pain" matching "paintings",
+// "ache" matching "reached", "ct" matching "doctor", etc.
+// Fast path: substring check first, then boundary regex only on a hit.
+function matchesMedTerm(text: string, term: string): boolean {
+  if (!text.includes(term)) return false;
+  // Multi-word terms (e.g. "hair loss") only need leading boundary — trailing
+  // space is enough to avoid "hair loss…" false positives but isn't needed for
+  // single-word terms where \b handles both sides cleanly.
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`).test(text);
+}
+
 function scoreRelevance(
   msg: WaMessage,
   embMap?: Map<string, number[]>,
   refVecs?: number[][],
-): number {
+): { score: number; categoryHits: number } {
   const lower = normalizeSpaces(expandSynonyms(msg.body));
   let score = 0;
 
   // Count unique semantic *categories* hit, not unique list entries, so
   // "chemo" + "chemotherapy" in the same message count as one signal.
-  const categoryHits = TERM_CATEGORIES.filter(cat => cat.some(t => lower.includes(t))).length;
+  // Word-boundary matching prevents substring false positives ("pain" in "paintings").
+  const categoryHits = TERM_CATEGORIES.filter(cat => cat.some(t => matchesMedTerm(lower, t))).length;
   score += Math.min(categoryHits * 12, 48);
 
   // Density bonus: listing multiple distinct side effects is more substantive than one.
-  const sideEffectHits = SIDE_EFFECT_TERMS.filter(t => lower.includes(t)).length;
+  const sideEffectHits = SIDE_EFFECT_TERMS.filter(t => matchesMedTerm(lower, t)).length;
   if (sideEffectHits >= 3) score += 12;
   else if (sideEffectHits >= 2) score += 6;
 
@@ -623,7 +664,7 @@ function scoreRelevance(
   // Doctor-authored messages carry authoritative weight.
   if (isDoctor(msg.sender)) score += 15;
 
-  return clamp(score, 0, 100);
+  return { score: clamp(score, 0, 100), categoryHits };
 }
 
 // ─── Phase 4: Pseudonymous Users ──────────────────────────────────────────────
@@ -768,6 +809,97 @@ function hasRelatedCategories(textA: string, textB: string): boolean {
   );
 }
 
+// ─── LLM-assisted thread attachment ──────────────────────────────────────────
+
+const LLM_SYSTEM_PROMPT = `You decide if a WhatsApp message belongs in a conversation thread from a cancer support group. Reply YES if the message is responding to, continuing, or directly related to the thread topic. Reply NO if it introduces a different topic. Reply with only YES or NO.`;
+
+let llmCallCount = 0;
+let llmCacheHits = 0;
+
+// Sliding-window rate limiter for Gemini free tier (5 RPM).
+// Tracks timestamps of the last 5 actual API calls; if the oldest is less
+// than 60 s ago we wait until the window clears before firing the next call.
+const LLM_RATE_WINDOW_MS = 60_000;
+const LLM_MAX_RPM = 5;
+const llmCallTimestamps: number[] = [];
+
+async function rateLimitedLLMInvoke(
+  messages: [SystemMessage, HumanMessage],
+  verbose: boolean,
+): Promise<Awaited<ReturnType<typeof llm.invoke>>> {
+  if (llmCallTimestamps.length >= LLM_MAX_RPM) {
+    const oldest = llmCallTimestamps[0]!;
+    const waitMs = LLM_RATE_WINDOW_MS - (Date.now() - oldest);
+    if (waitMs > 0) {
+      if (verbose) {
+        console.log(`    [MIDDLE-LLM] rate-limit: waiting ${(waitMs / 1000).toFixed(1)}s (5 RPM cap)`);
+      } else {
+        process.stdout.write(`\r  [LLM] rate-limit: waiting ${(waitMs / 1000).toFixed(1)}s...   `);
+      }
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      if (!verbose) process.stdout.write("\r" + " ".repeat(50) + "\r");
+    }
+    llmCallTimestamps.shift();
+  }
+  llmCallTimestamps.push(Date.now());
+  return llm.invoke(messages);
+}
+
+async function shouldAttachLLM(
+  thread: { anchor: ScoredMessage; replies: ScoredMessage[] },
+  msg: ScoredMessage,
+  cache: Map<string, boolean>,
+  verbose: boolean,
+): Promise<boolean> {
+  const cacheKey = sha256(thread.anchor.body + "|" + msg.body);
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) {
+    llmCacheHits++;
+    if (verbose) {
+      console.log(
+        `    [MIDDLE-LLM] ${cached ? "YES" : "NO"} (cached) | ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
+      );
+    }
+    return cached;
+  }
+
+  const recentReplies = thread.replies.slice(-3).map(r => r.body).join("\n");
+  const humanPrompt = recentReplies
+    ? `Thread anchor: "${thread.anchor.body}"\nRecent replies:\n${recentReplies}\n---\nNew message: "${msg.body}"`
+    : `Thread anchor: "${thread.anchor.body}"\n---\nNew message: "${msg.body}"`;
+
+  try {
+    const response = await rateLimitedLLMInvoke([
+      new SystemMessage(LLM_SYSTEM_PROMPT),
+      new HumanMessage(humanPrompt),
+    ], verbose);
+    llmCallCount++;
+
+    const text = typeof response.content === "string"
+      ? response.content
+      : Array.isArray(response.content)
+        ? response.content.map((b: unknown) => typeof b === "string" ? b : (b as { text?: string }).text ?? "").join("")
+        : "";
+    const decision = text.trim().toUpperCase().startsWith("YES");
+
+    cache.set(cacheKey, decision);
+    if (verbose) {
+      console.log(
+        `    [MIDDLE-LLM] ${decision ? "YES" : "NO"} | ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
+      );
+    }
+    return decision;
+  } catch (err) {
+    if (verbose) {
+      console.log(
+        `    [MIDDLE-LLM] ERROR fallback=NO | ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    cache.set(cacheKey, false);
+    return false;
+  }
+}
+
 function isQuestionLike(msg: ScoredMessage): boolean {
   const lower = msg.body.toLowerCase();
   return msg.body.includes("?") || QUESTION_WORDS.some(w => lower.startsWith(w));
@@ -782,6 +914,28 @@ const SUPPORT_SEEKING_PATTERNS = [
 function isSupportSeeking(msg: ScoredMessage): boolean {
   const lower = msg.body.toLowerCase();
   return SUPPORT_SEEKING_PATTERNS.some(p => lower.includes(p));
+}
+
+function isBackReference(msg: ScoredMessage): boolean {
+  const trimmed = msg.body.trim();
+  return BACK_REFERENCE_PATTERNS.some(p => p.test(trimmed));
+}
+
+// Detects short follow-up questions whose topic is carried entirely by a deictic
+// pronoun ("this", "it", "that", "these", "such") with no independent medical terms.
+// E.g. "How often this should be done?" or "Can Murabba be consumed??" — these
+// have zero overlap with the thread they follow because they rely on conversational
+// context rather than repeating the topic keywords.
+function isDeictic(msg: ScoredMessage): boolean {
+  if (!msg.body.includes("?")) return false;
+  const words = msg.body.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length > 12) return false;  // longer questions are more self-contained
+  const hasDeictic = words.some(w => ["this", "it", "that", "these", "such", "same"].includes(w));
+  if (!hasDeictic) return false;
+  // Exclude if message already contains independent medical terms (overlap would work)
+  const lower = msg.body.toLowerCase();
+  const hasMedTerms = TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(lower, t)));
+  return !hasMedTerms;
 }
 
 function isShortContextualReply(msg: ScoredMessage): boolean {
@@ -810,7 +964,10 @@ function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage
 }
 
 
-function reconstructThreads(scored: ScoredMessage[], verbose = false, embMap?: Map<string, number[]>): { threads: WaThread[]; backwardAttached: number } {
+async function reconstructThreads(scored: ScoredMessage[], verbose = false, embMap?: Map<string, number[]>, useLLM = true): Promise<{ threads: WaThread[]; backwardAttached: number }> {
+  const llmCache = new Map<string, boolean>();
+  llmCallCount = 0;
+  llmCacheHits = 0;
   interface ActiveThread {
     anchor: ScoredMessage;
     replies: ScoredMessage[];
@@ -982,8 +1139,37 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false, embMap?: M
       }
 
     } else if (bestEffective < SPLIT_THRESHOLD && canAnchor && independent) {
-      if (active.length >= 3) evictWeakest();
-      active.push({ anchor: msg, replies: [], lastTime: now });
+      // Before splitting, check if this is a direct answer to a recent open question.
+      // Q-A pairs often have near-zero token overlap — "I also had the same issue"
+      // shares no tokens with "Does exemestane increase blood pressure?".
+      // Heuristic fast-path: back-reference opener + recency. LLM fallback for the rest.
+      const gapFromAnchor = now - best.anchor.timestamp.getTime();
+      const recentThread = gapFromAnchor < GAP_NEW_THREAD_MS;
+      const recentOpenQuestion = recentThread &&
+        (isQuestionLike(best.anchor) || isSupportSeeking(best.anchor));
+
+      if (recentOpenQuestion && isBackReference(msg)) {
+        // Heuristic fast-path: clear back-reference opener, no LLM needed
+        if (verbose) console.log(`    [SPLIT→ATTACH] back-reference opener within open-question window`);
+        best.replies.push(msg);
+        best.lastTime = now;
+      } else if ((recentOpenQuestion || (recentThread && isDeictic(msg))) && useLLM) {
+        // Deictic follow-up ("How often this should be done?") or answer to an open
+        // question — overlap is always near zero but the LLM can read the context.
+        // eslint-disable-next-line no-await-in-loop -- sequential threading requires ordered decisions
+        const attach = await shouldAttachLLM(best, msg, llmCache, verbose);
+        if (attach) {
+          if (verbose) console.log(`    [SPLIT→ATTACH] deictic/answer LLM=YES`);
+          best.replies.push(msg);
+          best.lastTime = now;
+        } else {
+          if (active.length >= 3) evictWeakest();
+          active.push({ anchor: msg, replies: [], lastTime: now });
+        }
+      } else {
+        if (active.length >= 3) evictWeakest();
+        active.push({ anchor: msg, replies: [], lastTime: now });
+      }
 
     } else {
       // Middle band — require extra signal before attaching
@@ -1000,22 +1186,50 @@ function reconstructThreads(scored: ScoredMessage[], verbose = false, embMap?: M
         active.push({ anchor: msg, replies: [], lastTime: now });
 
       } else if (msg.relevanceScore >= MIN_RELEVANCE) {
-        const bestCtx = threadContextStr(best);
-        const hasHighRelevance = msg.relevanceScore >= MIDDLE_BAND_MIN_SCORE;
-        const hasSharedMedical = hasSharedCategories(msg.body, bestCtx);
+        // Fast-path: sender match or doctor with minimum overlap — skip LLM only when
+        // there is at least some topical connection (eff > 0.05). Zero-overlap doctor
+        // messages (e.g. an art comment inside a mouth-care thread) fall through to the
+        // LLM so topic relevance is still checked.
+        const DOCTOR_ATTACH_MIN = 0.05;
         const hasSenderMatch = senderBonus(msg, best) > 0;
-        const hasRecentActivity = (now - best.lastTime) <= MIDDLE_BAND_RECENCY_MS;
-        const hasRelated = hasRelatedCategories(msg.body, bestCtx);
-
-        const hasHighWithOverlap = hasHighRelevance && bestEffective >= 0.16;
-        const hasRecentWithOverlap = hasRecentActivity && bestEffective >= 0.25;
-        const hasMedicalWithOverlap = hasSharedMedical && bestEffective >= 0.20;
-        const hasRelatedWithRecency = hasRelated && hasRecentActivity;
-        if (hasHighWithOverlap || hasMedicalWithOverlap || hasSenderMatch || hasRecentWithOverlap || hasRelatedWithRecency || isDoctor(msg.sender)) {
+        const hasStrongSignal = (hasSenderMatch || isDoctor(msg.sender)) && bestEffective > DOCTOR_ATTACH_MIN;
+        if (hasStrongSignal) {
           best.replies.push(msg);
           best.lastTime = now;
+        } else if (useLLM) {
+          // Pre-filter: skip LLM for messages with no medical/care/remedy terms
+          const msgLower2 = normalizeSpaces(msg.body.toLowerCase());
+          const hasMedTerms = TERM_CATEGORIES.some(cat => cat.some(t => msgLower2.includes(t)));
+          if (!hasMedTerms) {
+            unattached.push(msg);
+          } else {
+            // eslint-disable-next-line no-await-in-loop -- sequential threading requires ordered decisions
+            const attach = await shouldAttachLLM(best, msg, llmCache, verbose);
+            if (attach) {
+              best.replies.push(msg);
+              best.lastTime = now;
+            } else {
+              unattached.push(msg);
+            }
+          }
         } else {
-          unattached.push(msg);
+          // --no-llm fallback: use old heuristic signals
+          const bestCtx = threadContextStr(best);
+          const hasHighRelevance = msg.relevanceScore >= MIDDLE_BAND_MIN_SCORE;
+          const hasSharedMedical = hasSharedCategories(msg.body, bestCtx);
+          const hasRecentActivity = (now - best.lastTime) <= MIDDLE_BAND_RECENCY_MS;
+          const hasRelated = hasRelatedCategories(msg.body, bestCtx);
+
+          const hasHighWithOverlap = hasHighRelevance && bestEffective >= 0.16;
+          const hasRecentWithOverlap = hasRecentActivity && bestEffective >= 0.25;
+          const hasMedicalWithOverlap = hasSharedMedical && bestEffective >= 0.20;
+          const hasRelatedWithRecency = hasRelated && hasRecentActivity;
+          if (hasHighWithOverlap || hasMedicalWithOverlap || hasRecentWithOverlap || hasRelatedWithRecency) {
+            best.replies.push(msg);
+            best.lastTime = now;
+          } else {
+            unattached.push(msg);
+          }
         }
       }
     }
@@ -1178,6 +1392,7 @@ async function main(): Promise<void> {
   const dryRun  = args.includes("--dry-run");
   const verbose = args.includes("--verbose");
   const noEmbed = args.includes("--no-embed");
+  const noLLM   = args.includes("--no-llm");
 
   const linesArg       = parseArg(args, "lines");
   const dateArg        = parseArg(args, "date");
@@ -1343,9 +1558,10 @@ async function main(): Promise<void> {
   }
 
   // ── Score ──
-  const scored: ScoredMessage[] = filtered.map(m => ({
-    ...m, relevanceScore: scoreRelevance(m, embMap, refVecs),
-  }));
+  const scored: ScoredMessage[] = filtered.map(m => {
+    const { score, categoryHits } = scoreRelevance(m, embMap, refVecs);
+    return { ...m, relevanceScore: score, categoryHits };
+  });
 
   // ── Adaptive thresholds ──
   computeAdaptiveThresholds(scored.map(m => m.relevanceScore), verbose);
@@ -1391,17 +1607,20 @@ async function main(): Promise<void> {
   }
 
   // ── Thread reconstruction (runs in both dry-run and live mode) ──
-  const { threads, backwardAttached } = reconstructThreads(scored, verbose, embMap);
+  const { threads, backwardAttached } = await reconstructThreads(scored, verbose, embMap, !noLLM);
   stats.backwardAttached = backwardAttached;
 
   // Shared publish-gate helper so tStats, dry-run preview, and live seed loop
   // all use identical logic.
   function publishGate(t: WaThread): "auto" | "qa" | "skip" {
-    // Unanswered posts: if it was strong enough to start a thread, publish it
-    // directly. The anchor threshold is the only gate — no confidence needed.
+    // Unanswered posts: keep genuine unanswered medical questions as standalone
+    // posts, but require at least one real keyword-matched medical category hit.
+    // This guards against embedding-only anchors (art, motivational content)
+    // that score well on cosine similarity but contain no medical terminology.
     const substantiveReplies = t.replies.filter(r => r.relevanceScore >= MIN_RELEVANCE).length;
     if (substantiveReplies === 0 &&
-        t.anchor.relevanceScore >= ANCHOR_EXPERIENTIAL_SCORE) {
+        t.anchor.relevanceScore >= ANCHOR_EXPERIENTIAL_SCORE &&
+        t.anchor.categoryHits >= 1) {
       return "auto";
     }
 
@@ -1425,6 +1644,9 @@ async function main(): Promise<void> {
   console.log(`  QA review    (conf ${QA_CONF}–${AUTO_PUBLISH_CONF - 1}):         ${tStats.qa}`);
   console.log(`  Skipped:                           ${tStats.skip}`);
   console.log(`  Backward-attached replies:         ${stats.backwardAttached}`);
+  if (!noLLM) {
+    console.log(`  LLM calls (middle band):           ${llmCallCount} (${llmCacheHits} cached)`);
+  }
 
   if (dryRun) {
     console.log("\n── Thread preview (dry-run, no DB writes) ──────");
