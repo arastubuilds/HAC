@@ -58,5 +58,12 @@ export function rankChunks(
     if (unique.length >= topK) break;
   }
 
-  return unique.filter(c => c.score >= minScore);
+  const filtered = unique.filter(c => c.score >= minScore);
+
+  // Fallback: if strict threshold yields nothing, relax for historical content
+  if (filtered.length === 0 && unique.length > 0) {
+    return unique.filter(c => c.score >= 0.35);
+  }
+
+  return filtered;
 }

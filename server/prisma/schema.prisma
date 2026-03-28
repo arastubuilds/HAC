@@ -88,17 +88,80 @@ model Reply {
 }
 
 model ImportRun {
-  id                String    @id @default(uuid())
+  id                String           @id @default(uuid())
   sourceFile        String
   status            String
-  startedAt         DateTime  @default(now())
+  startedAt         DateTime         @default(now())
   completedAt       DateTime?
-  totalLines        Int       @default(0)
-  parsedMessages    Int       @default(0)
-  droppedMessages   Int       @default(0)
-  parseFailures     Int       @default(0)
-  createdPosts      Int       @default(0)
-  createdReplies    Int       @default(0)
-  skippedDuplicates Int       @default(0)
-  qaReviewThreads   Int       @default(0)
+  totalLines        Int              @default(0)
+  parsedMessages    Int              @default(0)
+  droppedMessages   Int              @default(0)
+  parseFailures     Int              @default(0)
+  createdPosts      Int              @default(0)
+  createdReplies    Int              @default(0)
+  skippedDuplicates Int              @default(0)
+  qaReviewThreads   Int              @default(0)
+  parserVersion     String?
+  classifierVersion String?
+  threadingVersion  String?
+  embeddingModel    String?
+  llmModel          String?
+  configVersion     String?
+  publishVersion    String?
+  importMode        String?
+  llmFailures       Int              @default(0)
+  embedFailures     Int              @default(0)
+  dbWriteFailures   Int              @default(0)
+  messageStagings   MessageStaging[]
+}
+
+model MessageStaging {
+  id                    String       @id @default(uuid())
+  waMessageKey          String
+  importRunId           String
+  importRun             ImportRun    @relation(fields: [importRunId], references: [id], onDelete: Cascade)
+  timestamp             DateTime
+  senderPseudonym       String
+  rawBody               String
+  normalizedBody        String
+  isSystem              Boolean      @default(false)
+  isMedia               Boolean      @default(false)
+  language              Language
+  parseConfidence       Float        @default(1.0)
+  wasDropped            Boolean      @default(false)
+  dropReason            DropReason?
+  medicalRelevanceScore Float?
+  anchorLikelihoodScore Float?
+  replyLikelihoodScore  Float?
+  categoryHits          Int?
+  contentType           ContentType?
+
+  @@unique([waMessageKey, importRunId])
+  @@index([importRunId])
+}
+
+enum Language {
+  english
+  hinglish
+}
+
+enum DropReason {
+  system_message
+  media_only
+  no_alphanumeric
+  too_short
+  spam_sender
+  spam_content
+  bare_url
+  meeting_link
+  social_link_no_med
+}
+
+enum ContentType {
+  question
+  experience
+  recommendation
+  ack
+  logistics
+  noise
 }

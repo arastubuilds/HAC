@@ -56,10 +56,48 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const charQueueRef = useRef<string[]>([]);
+  const drainTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamDoneRef = useRef(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  function stopDrain() {
+    if (drainTimerRef.current) {
+      clearInterval(drainTimerRef.current);
+      drainTimerRef.current = null;
+    }
+  }
+
+  function flushQueue(assistantId: string) {
+    const remaining = charQueueRef.current.join("");
+    charQueueRef.current = [];
+    if (remaining) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, content: m.content + remaining } : m
+        )
+      );
+    }
+  }
+
+  function startDrain(assistantId: string) {
+    if (drainTimerRef.current) return;
+    drainTimerRef.current = setInterval(() => {
+      const ch = charQueueRef.current.shift();
+      if (ch) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + ch } : m
+          )
+        );
+      } else if (streamDoneRef.current) {
+        stopDrain();
+      }
+    }, 18);
+  }
 
   async function sendMessage(input: string) {
     const userMsg: ChatMessage = { id: makeId(), role: "user", content: input };
@@ -70,6 +108,10 @@ export default function ChatPage() {
       content: "",
       isStreaming: true,
     };
+
+    charQueueRef.current = [];
+    streamDoneRef.current = false;
+    stopDrain();
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsStreaming(true);
@@ -107,6 +149,7 @@ export default function ChatPage() {
       }
 
       let endedCleanly = false;
+      let doneEvent: Extract<QueryStreamEvent, { type: "done" }> | null = null;
 
       for await (const event of parseSSE(res.body)) {
         if (event.type === "status") {
@@ -116,29 +159,14 @@ export default function ChatPage() {
             )
           );
         } else if (event.type === "token") {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: m.content + event.content }
-                : m
-            )
-          );
+          charQueueRef.current.push(...event.content.split(""));
+          startDrain(assistantId);
         } else if (event.type === "done") {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    isStreaming: false,
-                    stage: undefined,
-                    citations: event.citations,
-                  }
-                : m
-            )
-          );
+          doneEvent = event;
           endedCleanly = true;
-          setIsStreaming(false);
         } else {
+          stopDrain();
+          flushQueue(assistantId);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -151,7 +179,38 @@ export default function ChatPage() {
         }
       }
 
+      streamDoneRef.current = true;
+
+      if (doneEvent) {
+        // Wait for the character queue to fully drain before finalizing
+        const citations = doneEvent.citations;
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (charQueueRef.current.length === 0) {
+              clearInterval(check);
+              resolve();
+            }
+          }, 18);
+        });
+        stopDrain();
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  isStreaming: false,
+                  stage: undefined,
+                  citations,
+                }
+              : m
+          )
+        );
+        setIsStreaming(false);
+      }
+
       if (!endedCleanly) {
+        stopDrain();
+        flushQueue(assistantId);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
@@ -162,6 +221,8 @@ export default function ChatPage() {
         setIsStreaming(false);
       }
     } catch (err) {
+      stopDrain();
+      flushQueue(assistantId);
       const message = err instanceof Error ? err.message : "Something went wrong";
       setMessages((prev) =>
         prev.map((m) =>

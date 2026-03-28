@@ -24,8 +24,10 @@ import { embeddingsModel } from "../infra/embeddings.js";
 import { llm } from "../infra/llm.js";
 import { prisma } from "../infra/prisma.js";
 import { redisConnection } from "../infra/redis.js";
-import { enqueuePostIngest } from "../queues/postIngest.queue.js";
-import { enqueueReplyIngest } from "../queues/replyIngest.queue.js";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let enqueuePostIngest!: Awaited<typeof import("../queues/postIngest.queue.js")>["enqueuePostIngest"];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let enqueueReplyIngest!: Awaited<typeof import("../queues/replyIngest.queue.js")>["enqueueReplyIngest"];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1394,6 +1396,11 @@ async function main(): Promise<void> {
   const noEmbed = args.includes("--no-embed");
   const noLLM   = args.includes("--no-llm");
 
+  if (!dryRun) {
+    ({ enqueuePostIngest }  = await import("../queues/postIngest.queue.js"));
+    ({ enqueueReplyIngest } = await import("../queues/replyIngest.queue.js"));
+  }
+
   const linesArg       = parseArg(args, "lines");
   const dateArg        = parseArg(args, "date");
   const weekArg        = parseArg(args, "week");
@@ -1737,7 +1744,7 @@ async function main(): Promise<void> {
 
   } // end for (const currentDate of datesToProcess)
 
-  await redisConnection.quit();
+  if (!dryRun) await redisConnection.quit();
 }
 
 void main().catch((err: unknown) => {

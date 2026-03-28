@@ -4,7 +4,8 @@ import { useAuthStore } from "@/stores/auth.store";
 import type { User } from "@hac/shared/types";
 
 export function AuthHydrator() {
-  const { setUser, clearUser } = useAuthStore((s) => ({ setUser: s.setUser, clearUser: s.clearUser }));
+  const setUser = useAuthStore((s) => s.setUser);
+  const clearUser = useAuthStore((s) => s.clearUser);
 
   useEffect(() => {
     fetch("/api/auth/me")
