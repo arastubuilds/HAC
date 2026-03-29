@@ -24,6 +24,7 @@ import { embeddingsModel } from "../infra/embeddings.js";
 import { llm } from "../infra/llm.js";
 import { prisma } from "../infra/prisma.js";
 import { redisConnection } from "../infra/redis.js";
+import { splitHumanName, whatsappUsernameForSender } from "../utils/userDisplay.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let enqueuePostIngest!: Awaited<typeof import("../queues/postIngest.queue.js")>["enqueuePostIngest"];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -677,18 +678,17 @@ async function resolveUser(sender: string): Promise<string> {
   const cached = userCache.get(sender);
   if (cached) return cached;
 
-  const prefix   = isDoctor(sender) ? "wa_doctor" : "wa_member";
-  const hash8    = sha256(sender.toLowerCase()).slice(0, 8);
-  const username = `${prefix}_${hash8}`;
+  const username = whatsappUsernameForSender(sender);
   const email    = `${username}@hac.internal`;
+  const { firstName, lastName } = splitHumanName(sender);
 
   // No Account row — these users are never meant to log in.
   // verifyCredentials() looks up provider:"local" accounts; absence of any
   // account means login attempts fail naturally without any special-casing.
   const user = await prisma.user.upsert({
     where: { username },
-    create: { username, email },
-    update: {},
+    create: { username, email, firstName, lastName },
+    update: { firstName, lastName },
     select: { id: true },
   });
 

@@ -30,7 +30,9 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { embeddingsModel } from "../infra/embeddings.js";
 import { llm } from "../infra/llm.js";
 import { prisma } from "../infra/prisma.js";
+import { type DropReason, type ContentType as PrismaContentType } from "@prisma/client";
 import { getRedisConnection } from "../infra/redis.js";
+import { splitHumanName, whatsappUsernameForSender } from "../utils/userDisplay.js";
 
 // Queue modules create BullMQ Queue instances (and connect to Redis) at load time.
 // Defer their import to main() so importing this module for benchmarking or testing
@@ -46,7 +48,7 @@ let enqueueReplyIngest!: Awaited<typeof import("../queues/replyIngest.queue.js")
 
 const PARSER_VERSION     = "2.0.0";
 const CLASSIFIER_VERSION = "2.0.0";
-const THREADING_VERSION  = "3.1.0";
+const THREADING_VERSION  = "3.3.0";
 const PUBLISH_VERSION    = "3.0.0";
 const EMBEDDING_MODEL    = "intfloat/e5-base-v2";
 const LLM_MODEL          = "gemini-2.5-flash";
@@ -96,6 +98,7 @@ export interface MessageScores {
   medicalRelevanceScore: number;   // medical term density + embedding proximity
   anchorLikelihoodScore: number;   // question / experiential / recommendation signals
   replyLikelihoodScore: number;    // back-reference / ack / support-seeking signals
+  blendedScore: number;            // 0.5*medical + 0.3*anchor + 0.2*reply
   categoryHits: number;            // raw count of matched semantic categories
   // Signal flags — used by the benchmark to mirror the pipeline's experiential-path gate
   isExperiential:  boolean;        // EXPERIENTIAL_PATTERNS matched
@@ -109,6 +112,7 @@ export interface ScoredMessage extends WaMessage {
   // Stores medicalRelevanceScore so Pinecone/ranking signals are correct.
   relevanceScore: number;
   categoryHits: number;
+  blendedScore: number;
 }
 
 export interface WaThread {
@@ -427,11 +431,13 @@ let SPAM_CONTENT_MARKERS = ["Designs that listen.."];
 
 const ATTACH_THRESHOLD  = 0.35;
 const SPLIT_THRESHOLD   = 0.20;
+const OPEN_Q_ATTACH_MIN = 0.25; // relaxed MIDDLE threshold while question is unanswered
 const SOFT_REPLY_CAP    = 15;
 const SENDER_BONUS_REPLIER = 0.08;
 const SENDER_BONUS_ANCHOR  = 0.12;
 const MIDDLE_BAND_RECENCY_MS = 15 * 60 * 1000;
 const NEAR_THREAD_WINDOW_MS  = 30 * 60 * 1000;
+const DIRECT_REPLY_WINDOW_MS =  5 * 60 * 1000; // bare contextual replies (yes/same/me too)
 const BACKWARD_WINDOW_MS     = 3 * 60 * 60 * 1000;
 const BACKWARD_ATTACH_THRESHOLD = 0.35;
 
@@ -710,9 +716,11 @@ export function classifyMessage(
   const isQuestion      = msg.body.includes("?") || QUESTION_WORDS.some(w => lower.startsWith(w));
   const isExperiential  = EXPERIENTIAL_PATTERNS.some(p => lower.includes(p));
   const isSupportSeeking = SUPPORT_SEEKING_PATTERNS.some(p => lower.includes(p));
+  const experientialWithMedical = isExperiential && categoryHits > 0;
 
   if (isQuestion)     anchorScore += 20;
   if (isExperiential) anchorScore += 15;
+
   if (RECOMMENDATION_PATTERNS.some(p => lower.includes(p))) anchorScore += 10;
   if (isDoctor(msg.sender)) anchorScore += 15;
 
@@ -734,10 +742,29 @@ export function classifyMessage(
     anchorScore -= 10;
   }
 
+  // Coupling boost: experiential + medical context usually indicates
+  // substantive patient narrative; boost both anchor and reply usefulness.
+  if (experientialWithMedical) {
+    medScore += 8;
+    anchorScore += 10;
+    replyScore += 4;
+  }
+
+  const medicalRelevanceScore = clamp(medScore, 0, 100);
+  const anchorLikelihoodScore = clamp(anchorScore, 0, 100);
+  const replyLikelihoodScore  = clamp(replyScore, 0, 100);
+  const blendedScore = clamp(
+    0.5 * medicalRelevanceScore +
+    0.3 * anchorLikelihoodScore +
+    0.2 * replyLikelihoodScore,
+    0, 100,
+  );
+
   return {
-    medicalRelevanceScore: clamp(medScore, 0, 100),
-    anchorLikelihoodScore: clamp(anchorScore, 0, 100),
-    replyLikelihoodScore:  clamp(replyScore, 0, 100),
+    medicalRelevanceScore,
+    anchorLikelihoodScore,
+    replyLikelihoodScore,
+    blendedScore,
     categoryHits,
     isExperiential,
     isSupportSeeking,
@@ -780,15 +807,14 @@ async function resolveUser(sender: string): Promise<string> {
   const cached = userCache.get(sender);
   if (cached) return cached;
 
-  const prefix   = isDoctor(sender) ? "wa_doctor" : "wa_member";
-  const hash8    = sha256(sender.toLowerCase()).slice(0, 8);
-  const username = `${prefix}_${hash8}`;
+  const username = whatsappUsernameForSender(sender);
   const email    = `${username}@hac.internal`;
+  const { firstName, lastName } = splitHumanName(sender);
 
   const user = await prisma.user.upsert({
     where: { username },
-    create: { username, email },
-    update: {},
+    create: { username, email, firstName, lastName },
+    update: { firstName, lastName },
     select: { id: true },
   });
 
@@ -871,6 +897,22 @@ export function hasSharedCategories(textA: string, textB: string, maxCats = TERM
     const hitB = cat.some(t => matchesMedTerm(lowerB, t));
     return hitA && hitB;
   });
+}
+function isAnchor(candidate: ScoredMessage, config: RunConfig): boolean {
+  const s = candidate.scores;
+
+  return (
+    s.anchorLikelihoodScore >= config.anchorMinScore ||
+
+    // blended fallback
+    s.blendedScore >= config.anchorMinScore ||
+
+    // experiential anchor path
+    (
+      s.isExperiential &&
+      s.medicalRelevanceScore >= config.anchorExperientialScore
+    )
+  );
 }
 
 const RELATED_CATEGORY_PAIRS: [number, number][] = [
@@ -1097,6 +1139,7 @@ async function reconstructThreads(
     llmAssistedCount: number;
     llmFailedCount:   number;
     llmDecisions:     LLMDecisionEntry[];
+    openQuestion:     boolean;  // true until first substantive reply arrives
   }
 
   const active: ActiveThread[]      = [];
@@ -1120,7 +1163,10 @@ async function reconstructThreads(
     let weakScore = Infinity;
     for (let i = 0; i < active.length; i++) {
       const t = active[i]!;
-      const score = t.anchor.scores.medicalRelevanceScore + t.replies.length * 5;
+      // Keep open question/support threads alive a bit longer so experiential
+      // follow-ups can still attach instead of becoming rogue anchors.
+      const openQuestionBoost = t.openQuestion ? 30 : 0;
+      const score = t.anchor.scores.medicalRelevanceScore + t.replies.length * 5 + openQuestionBoost;
       if (score < weakScore) { weakScore = score; weakIdx = i; }
     }
     const weakest = active[weakIdx];
@@ -1130,8 +1176,46 @@ async function reconstructThreads(
   for (const msg of scored) {
     const medScore    = msg.scores.medicalRelevanceScore;
     const anchorScore = msg.scores.anchorLikelihoodScore;
+    const blendedScore = msg.scores.blendedScore;
 
     if (medScore < cfg.minRelevance) {
+      // Direct-reply fast path: bare contextual replies (yes / same / me too)
+      // within 5 min of the most recent active thread are attached
+      // unconditionally — bypassing nearRelaxedMin which silences medScore=0.
+      if (isShortContextualReply(msg) && active.length > 0) {
+        const now = msg.timestamp.getTime();
+        const best = active.reduce((a, b) => a.lastTime > b.lastTime ? a : b);
+        const gap = now - best.lastTime;
+        if (gap <= DIRECT_REPLY_WINDOW_MS) {
+          best.replies.push(msg);
+          best.lastTime = now;
+          if (verbose) {
+            console.log(
+              `    [DIRECT_REPLY] gap=${Math.round(gap / 60000)}min medScore=${medScore} rep=${msg.scores.replyLikelihoodScore}` +
+              ` | ${msg.body.slice(0, 60).replace(/\n/g, " ")}`,
+            );
+          }
+          continue;
+        }
+      }
+      // High blended-score fallback: attach likely substantive replies even when
+      // pure medical score dips below minRelevance.
+      if (active.length > 0 && blendedScore >= cfg.minReplyScore) {
+        const now = msg.timestamp.getTime();
+        const recentThread = active.find(t => (now - t.lastTime) <= DIRECT_REPLY_WINDOW_MS);
+        if (recentThread) {
+          const ctx = threadContextStr(recentThread);
+          const hasAnyCategoryMatch = hasSharedCategories(msg.body, ctx, 5);
+          const hasRelated = hasRelatedCategories(msg.body, ctx);
+          const hasSender = senderBonus(msg, recentThread) > 0;
+          const contextual = hasAnyCategoryMatch || hasRelated || hasSender || isBackReference(msg);
+          if (contextual) {
+            recentThread.replies.push(msg);
+            recentThread.lastTime = now;
+            continue;
+          }
+        }
+      }
       if (isShortContextualReply(msg) && active.length > 0 && medScore >= cfg.nearThreadRelaxedMin) {
         const now = msg.timestamp.getTime();
         const best = active.reduce((a, b) => a.lastTime > b.lastTime ? a : b);
@@ -1203,7 +1287,7 @@ async function reconstructThreads(
       TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower, t)));
 
     const independent =
-      anchorScore >= cfg.anchorMinScore ||
+      isAnchor(msg, cfg) ||
       (isExperientialWithMed   && anchorScore >= cfg.anchorExperientialScore) ||
       (isSupportSeekingWithMed && anchorScore >= cfg.anchorExperientialScore) ||
       (isQuestionWithMed       && anchorScore >= cfg.anchorExperientialScore);
@@ -1212,7 +1296,7 @@ async function reconstructThreads(
 
     if (active.length === 0) {
       if (canAnchor && independent) {
-        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
+        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
       }
       continue;
     }
@@ -1230,6 +1314,37 @@ async function reconstructThreads(
       if (effOv > bestEffective) { bestRawOv = rawOv; bestEffective = effOv; bestIdx = i; }
     }
 
+    // Question-priority routing: experiential medical narratives are typically
+    // replies to recent open questions on the same topic, not new anchors.
+    if (isExperientialWithMed) {
+      let questionIdx = -1;
+      let questionEff = -Infinity;
+      let questionRaw = 0;
+      for (let i = 0; i < active.length; i++) {
+        const t = active[i];
+        if (!t) continue;
+        const recent = (now - t.lastTime) <= cfg.gapNewThreadMs;
+        if (!recent) continue;
+        const openQ = t.openQuestion || isQuestionLike(t.anchor) || isSupportSeeking(t.anchor);
+        if (!openQ) continue;
+        const sharedTopic = hasSharedCategories(msg.body, t.anchor.body) || hasRelatedCategories(msg.body, t.anchor.body);
+        if (!sharedTopic) continue;
+        const rawOv = topicOverlap(t.anchor.body, msg.body, embMap, t.anchor.body);
+        const effOv = rawOv + senderBonus(msg, t);
+        if (rawOv < 0.10) continue;
+        if (effOv > questionEff) {
+          questionIdx = i;
+          questionEff = effOv;
+          questionRaw = rawOv;
+        }
+      }
+      if (questionIdx >= 0) {
+        bestIdx = questionIdx;
+        bestEffective = questionEff;
+        bestRawOv = questionRaw;
+      }
+    }
+
     const best = active[bestIdx];
     if (!best) continue;
 
@@ -1239,7 +1354,7 @@ async function reconstructThreads(
         bestEffective < SPLIT_THRESHOLD ? "SPLIT" : "MIDDLE";
       console.log(
         `    [${branch}] ov=${bestRawOv.toFixed(3)} eff=${bestEffective.toFixed(3)} ` +
-        `gap=${Math.round(gap / 60000)}min medScore=${medScore} anchorScore=${anchorScore} ` +
+        `openQ=${best.openQuestion} gap=${Math.round(gap / 60000)}min medScore=${medScore} anchorScore=${anchorScore} ` +
         `| ${msg.body.slice(0, 50).replace(/\n/g, " ")}`
       );
     }
@@ -1249,14 +1364,26 @@ async function reconstructThreads(
       // (question or support-seeking) starts its own thread even when overlap is high.
       // Restricted to questions/seekers only — experiential messages ("I have been on X")
       // are almost always replies to an existing question, not new anchors.
-      const isNewAnchor = (question || seeking) && independent && !isDeictic(msg) && !isBackReference(msg);
+      const recentCtx = (now - best.lastTime) <= cfg.gapNewThreadMs;
+      const sharedOrRelated = hasSharedCategories(msg.body, threadContextStr(best)) || hasRelatedCategories(msg.body, threadContextStr(best));
+      const experientialShouldStayReply = isExperientialWithMed && recentCtx && (sharedOrRelated || bestRawOv >= 0.40 || senderBonus(msg, best) > 0);
+      const isNewAnchor = (question || seeking || isExperientialWithMed) &&
+        independent &&
+        !isDeictic(msg) &&
+        !isBackReference(msg) &&
+        !experientialShouldStayReply;
       if (isNewAnchor) {
         if (active.length >= 3) evictWeakest();
-        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
-      } else if (msg.scores.replyLikelihoodScore >= cfg.minReplyScore || medScore >= cfg.minReplyScore) {
+        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
+      } else if (
+        msg.scores.replyLikelihoodScore >= cfg.minReplyScore ||
+        medScore >= cfg.minReplyScore ||
+        blendedScore >= cfg.minReplyScore
+      ) {
         if (best.replies.length < SOFT_REPLY_CAP || bestRawOv >= 0.5) {
           best.replies.push(msg);
           best.lastTime = now;
+          if (best.openQuestion && medScore >= cfg.middleBandMinScore) best.openQuestion = false;
         } else {
           unattached.push(msg);
         }
@@ -1269,42 +1396,73 @@ async function reconstructThreads(
       const recentThread = gapFromAnchor < cfg.gapNewThreadMs;
       const recentOpenQuestion = recentThread &&
         (isQuestionLike(best.anchor) || isSupportSeeking(best.anchor));
+      const splitSharedOrRelated = hasSharedCategories(msg.body, threadContextStr(best)) || hasRelatedCategories(msg.body, threadContextStr(best));
+      const splitFuzzyReply = isExperientialWithMed && recentThread && splitSharedOrRelated;
+      const splitDeterministicAttach =
+        recentOpenQuestion &&
+        splitSharedOrRelated &&
+        blendedScore >= cfg.minReplyScore &&
+        bestRawOv >= 0.18;
 
-      if (recentOpenQuestion && isBackReference(msg)) {
+      if (splitFuzzyReply) {
+        if (verbose) console.log(`    [SPLIT→ATTACH] experiential+medical within recent related context`);
+        best.replies.push(msg);
+        best.lastTime = now;
+        if (best.openQuestion && medScore >= cfg.middleBandMinScore) best.openQuestion = false;
+      } else if (splitDeterministicAttach) {
+        if (verbose) console.log(`    [SPLIT→ATTACH] open-question + shared/related medical context`);
+        best.replies.push(msg);
+        best.lastTime = now;
+        if (best.openQuestion && medScore >= cfg.middleBandMinScore) best.openQuestion = false;
+      } else if (recentOpenQuestion && isBackReference(msg)) {
         if (verbose) console.log(`    [SPLIT→ATTACH] back-reference opener within open-question window`);
         best.replies.push(msg);
         best.lastTime = now;
       } else if ((recentOpenQuestion || (recentThread && isDeictic(msg))) && useLLM) {
         // Fast path: shared medical categories → attach without calling LLM
-        if (hasSharedCategories(msg.body, threadContextStr(best))) {
-          if (verbose) console.log(`    [SPLIT→ATTACH] shared categories fast path`);
+        if (hasSharedCategories(msg.body, threadContextStr(best)) && bestRawOv >= 0.18) {
+          if (verbose) console.log(`    [SPLIT→ATTACH] shared categories fast path (overlap-qualified)`);
           best.replies.push(msg);
           best.lastTime = now;
         } else {
-          // eslint-disable-next-line no-await-in-loop
-          const decision = await shouldAttachLLM(best, msg, llmCache, verbose, stats);
-          best.llmDecisions.push({ waMessageKey: msg.waMessageKey, branch: "split", decision, promptVersion: LLM_PROMPT_VERSION });
-          if (decision === "yes") {
-            if (verbose) console.log(`    [SPLIT→ATTACH] deictic/answer LLM=YES`);
-            best.replies.push(msg);
-            best.lastTime = now;
-            best.llmAssistedCount++;
-          } else if (decision === "review") {
-            // LLM failed — route to QA rather than silently splitting.
-            // Do NOT increment best.llmFailedCount here: the message goes to
-            // unattached, not to best.replies. Attribution happens in the
-            // backward pass if the message is later attached to a thread.
-            if (verbose) console.log(`    [SPLIT→REVIEW] LLM failure → QA`);
-            llmReviewMessages.add(msg.waMessageKey);
-            unattached.push(msg);
-          } else {
+          const borderlineSplit = blendedScore >= cfg.minReplyScore && (recentOpenQuestion || isDeictic(msg));
+          // Guardrail: do not let LLM force attach when topical overlap is weak.
+          // Require either shared categories with anchor text or solid semantic overlap.
+          const llmAttachAllowed = hasSharedCategories(msg.body, best.anchor.body) || bestRawOv >= 0.22;
+          if (!borderlineSplit) {
             if (active.length >= 3) evictWeakest();
-            active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
+            active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
+          } else if (!llmAttachAllowed) {
+            if (verbose) console.log(`    [SPLIT→NEW] LLM blocked: weak category/overlap signal`);
+            if (active.length >= 3) evictWeakest();
+            active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
+          } else {
+            // eslint-disable-next-line no-await-in-loop
+            const decision = await shouldAttachLLM(best, msg, llmCache, verbose, stats);
+            best.llmDecisions.push({ waMessageKey: msg.waMessageKey, branch: "split", decision, promptVersion: LLM_PROMPT_VERSION });
+            if (decision === "yes") {
+              if (verbose) console.log(`    [SPLIT→ATTACH] deictic/answer LLM=YES`);
+              best.replies.push(msg);
+              best.lastTime = now;
+              best.llmAssistedCount++;
+              if (best.openQuestion && medScore >= cfg.middleBandMinScore) best.openQuestion = false;
+            } else if (decision === "review") {
+              // LLM failed — route to QA rather than silently splitting.
+              // Do NOT increment best.llmFailedCount here: the message goes to
+              // unattached, not to best.replies. Attribution happens in the
+              // backward pass if the message is later attached to a thread.
+              if (verbose) console.log(`    [SPLIT→REVIEW] LLM failure → QA`);
+              llmReviewMessages.add(msg.waMessageKey);
+              unattached.push(msg);
+            } else {
+              if (active.length >= 3) evictWeakest();
+              active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
+            }
           }
         }
       } else {
         if (active.length >= 3) evictWeakest();
-        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
+        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
       }
 
     } else {
@@ -1312,10 +1470,15 @@ async function reconstructThreads(
       const gap = now - best.lastTime;
       if (gap > cfg.gapNewThreadMs && canAnchor && independent) {
         if (active.length >= 3) evictWeakest();
-        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
-      } else if (canAnchor && independent && bestEffective < ATTACH_THRESHOLD) {
+        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
+      } else if (
+        canAnchor &&
+        independent &&
+        bestEffective < ATTACH_THRESHOLD &&
+        !(isExperientialWithMed && best.openQuestion && bestEffective >= SPLIT_THRESHOLD)
+      ) {
         if (active.length >= 3) evictWeakest();
-        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [] });
+        active.push({ anchor: msg, replies: [], lastTime: now, llmAssistedCount: 0, llmFailedCount: 0, llmDecisions: [], openQuestion: msg.scores.isQuestion });
       } else if (medScore >= cfg.minRelevance) {
         const DOCTOR_ATTACH_MIN = 0.05;
         const bestCtx           = threadContextStr(best);
@@ -1326,23 +1489,39 @@ async function reconstructThreads(
         const hasRecentActivity = (now - best.lastTime) <= MIDDLE_BAND_RECENCY_MS;
         const hasRelated        = hasRelatedCategories(msg.body, bestCtx);
 
-        const hasHighWithOverlap    = hasHighRelevance && bestEffective >= 0.22;
-        const hasRecentWithOverlap  = hasRecentActivity && bestEffective >= 0.25;
-        const hasMedicalWithOverlap = hasSharedMedical && bestEffective >= 0.20;
-        const hasRelatedWithRecency = hasRelated && hasRecentActivity && bestEffective >= 0.25;
+        const hasHighWithOverlap    = hasHighRelevance && bestEffective >= 0.20;
+        const hasRecentWithOverlap  = hasRecentActivity && bestEffective >= 0.22;
+        const hasMedicalWithOverlap = hasSharedMedical && bestEffective >= 0.18;
+        const hasRelatedWithRecency = hasRelated && hasRecentActivity && bestEffective >= 0.22;
+        const fuzzyAttach = blendedScore >= cfg.middleBandMinScore &&
+          hasRecentActivity &&
+          (hasSharedMedical || hasRelated || hasSenderMatch) &&
+          bestEffective >= 0.16;
+
+        // Open-question relaxation: while the best thread's anchor is an unanswered
+        // question, lower the effective threshold so borderline replies attach instead
+        // of becoming rogue anchors (e.g. "I have been on Zoladex fr 5 yrs", eff=0.314).
+        const openQAttach = best.openQuestion && bestEffective >= OPEN_Q_ATTACH_MIN;
 
         // Deterministic path: resolve without LLM when signal is clear enough.
         const deterministicAttach = hasStrongSignal || hasHighWithOverlap
-          || hasMedicalWithOverlap || hasRecentWithOverlap || hasRelatedWithRecency;
+          || hasMedicalWithOverlap || hasRecentWithOverlap || hasRelatedWithRecency
+          || openQAttach || fuzzyAttach;
 
         if (deterministicAttach) {
           best.replies.push(msg);
           best.lastTime = now;
+          if (best.openQuestion && medScore >= cfg.middleBandMinScore) best.openQuestion = false;
         } else if (useLLM) {
-          // LLM only for messages with enough signal to be worth querying.
+          // LLM only for true borderline ambiguity in the middle band.
           const msgLower2   = normalizeSpaces(msg.body.toLowerCase());
           const hasMedTerms = TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower2, t)));
-          const worthLLM    = hasMedTerms && (hasSharedMedical || hasRelated || bestEffective >= SPLIT_THRESHOLD);
+          const borderlineBand = bestEffective >= (SPLIT_THRESHOLD - 0.03) && bestEffective < ATTACH_THRESHOLD;
+          const llmAttachAllowed = hasSharedMedical || (hasRelated && bestEffective >= 0.28);
+          const worthLLM = hasMedTerms &&
+            blendedScore >= cfg.minReplyScore &&
+            borderlineBand &&
+            llmAttachAllowed;
           if (!worthLLM) {
             unattached.push(msg);
           } else {
@@ -1398,6 +1577,111 @@ async function reconstructThreads(
       // If this message was an LLM-review failure, credit the thread it actually landed in.
       if (llmReviewMessages.has(msg.waMessageKey)) bestThread.llmFailedCount++;
       backwardCount++;
+    }
+  }
+
+  // Anchor correction pass:
+  // If a nearby question-only thread and a richer experiential thread are on the
+  // same medical topic, prefer the question as anchor and merge the experiential
+  // thread under it. This improves thread readability and QA usefulness.
+  for (let i = 0; i < finalized.length; i++) {
+    const qThread = finalized[i];
+    if (!qThread) continue;
+    const qAnchor = qThread.anchor;
+    if (!qAnchor.scores.isQuestion) continue;
+    if (qThread.replies.length > 1) continue;
+
+    let bestJ = -1;
+    let bestScore = -Infinity;
+    for (let j = 0; j < finalized.length; j++) {
+      if (i === j) continue;
+      const eThread = finalized[j];
+      if (!eThread) continue;
+      const eAnchor = eThread.anchor;
+      const experientialAnchor = eAnchor.scores.isExperiential && eAnchor.scores.medicalRelevanceScore >= cfg.anchorExperientialScore;
+      if (!experientialAnchor) continue;
+      if (eThread.replies.length < 3) continue;
+
+      const dt = Math.abs(eAnchor.timestamp.getTime() - qAnchor.timestamp.getTime());
+      if (dt > cfg.gapNewThreadMs) continue;
+
+      const shared = hasSharedCategories(qAnchor.body, eAnchor.body) || hasRelatedCategories(qAnchor.body, eAnchor.body);
+      if (!shared) continue;
+
+      const ov = topicOverlap(qAnchor.body, eAnchor.body, embMap, eAnchor.body);
+      if (ov < 0.10) continue;
+
+      const score = ov + (eThread.replies.length * 0.02);
+      if (score > bestScore) {
+        bestScore = score;
+        bestJ = j;
+      }
+    }
+
+    if (bestJ >= 0) {
+      const eThread = finalized[bestJ]!;
+      const mergedReplies = [eThread.anchor, ...qThread.replies, ...eThread.replies]
+        .filter(r => r.waMessageKey !== qThread.anchor.waMessageKey);
+      const dedup = new Map<string, ScoredMessage>();
+      for (const r of mergedReplies) dedup.set(r.waMessageKey, r);
+      const mergedThread: WaThread = {
+        anchor:           qThread.anchor,
+        replies:          [...dedup.values()].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
+        waThreadKey:      qThread.waThreadKey,
+        threadConfidence: qThread.threadConfidence,
+        llmAssistedCount: qThread.llmAssistedCount + eThread.llmAssistedCount,
+        llmFailedCount:   qThread.llmFailedCount + eThread.llmFailedCount,
+        llmDecisions:     [...qThread.llmDecisions, ...eThread.llmDecisions],
+      };
+      mergedThread.threadConfidence = calcThreadConfidence(mergedThread, cfg, embMap);
+
+      finalized[i] = mergedThread;
+      finalized.splice(bestJ, 1);
+      if (bestJ < i) i--;
+    }
+  }
+
+  // Singleton experiential fold-back:
+  // If an experiential+medical singleton anchor appears shortly after a same-topic
+  // question thread, treat it as a reply to that question instead of a separate thread.
+  const FOLD_BACK_WINDOW_MS = Math.max(cfg.gapNewThreadMs, 3 * 60 * 60 * 1000);
+  for (let i = 0; i < finalized.length; i++) {
+    const single = finalized[i];
+    if (!single) continue;
+    if (single.replies.length !== 0) continue;
+    const sAnchor = single.anchor;
+    const isExpMed = sAnchor.scores.isExperiential && sAnchor.scores.medicalRelevanceScore >= cfg.anchorExperientialScore;
+    if (!isExpMed) continue;
+
+    let bestQ = -1;
+    let bestScore = -Infinity;
+    for (let j = 0; j < finalized.length; j++) {
+      if (i === j) continue;
+      const q = finalized[j];
+      if (!q) continue;
+      if (!q.anchor.scores.isQuestion) continue;
+      const dt = sAnchor.timestamp.getTime() - q.anchor.timestamp.getTime();
+      if (dt < 0 || dt > FOLD_BACK_WINDOW_MS) continue;
+
+      const shared = hasSharedCategories(sAnchor.body, q.anchor.body) || hasRelatedCategories(sAnchor.body, q.anchor.body);
+      if (!shared) continue;
+      const ov = topicOverlap(q.anchor.body, sAnchor.body, embMap, q.anchor.body);
+      if (ov < 0.10) continue;
+
+      const score = ov + (q.replies.length * 0.02);
+      if (score > bestScore) {
+        bestScore = score;
+        bestQ = j;
+      }
+    }
+
+    if (bestQ >= 0) {
+      const q = finalized[bestQ]!;
+      q.replies.push(sAnchor);
+      q.replies.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      q.threadConfidence = calcThreadConfidence(q, cfg, embMap);
+      finalized.splice(i, 1);
+      i--;
     }
   }
 
@@ -1473,21 +1757,43 @@ export function publishGate(
     signals.anchorMedicalScore >= cfg.anchorExperientialScore &&
     signals.anchorCategoryHits >= 3
   ) {
+    if (signals.anchorMedicalScore < cfg.anchorMinScore) return "qa";
     return "auto";
   }
 
-  if (signals.publishConfidenceScore >= cfg.autoPublishConf) return "auto";
+  if (signals.publishConfidenceScore >= cfg.autoPublishConf) {
+    if (signals.anchorMedicalScore < cfg.anchorMinScore && signals.substantiveReplyCount < 2) return "qa";
+    return "auto";
+  }
   if (signals.publishConfidenceScore >= cfg.qaConf)          return "qa";
 
-  // Standalone question with at least one medical category hit → auto-publish.
-  // Catches genuine diet/treatment queries (e.g. "Can I eat X during chemo?") whose
-  // anchor vocabulary doesn't span 3+ categories but is clearly medically grounded.
+  // Question-led threads: allow auto only when the anchor is materially strong,
+  // or when at least one substantive reply supports the thread quality.
   if (
-    signals.substantiveReplyCount === 0 &&
     isQuestionLike(t.anchor) &&
     signals.anchorCategoryHits >= 1 &&
     signals.anchorMedicalScore >= cfg.minRelevance
-  ) return "auto";
+  ) {
+    const strongQuestionAnchor = signals.anchorMedicalScore >= (cfg.anchorMinScore + 8);
+    if (strongQuestionAnchor || signals.substantiveReplyCount >= 1) return "auto";
+    return "qa";
+  }
+
+  // QA fallback for medically meaningful but low-confidence threads.
+  // This reduces false SKIPs on experiential/medical updates without widening AUTO.
+  const anchorLooksMedical =
+    signals.anchorMedicalScore >= cfg.anchorExperientialScore &&
+    signals.anchorCategoryHits >= 1;
+  const anchorHasClinicalIntent =
+    t.anchor.scores.isExperiential ||
+    t.anchor.scores.isQuestion ||
+    isSupportSeeking(t.anchor);
+  if (anchorLooksMedical && anchorHasClinicalIntent) return "qa";
+  if (
+    signals.substantiveReplyCount >= 1 &&
+    signals.anchorMedicalScore >= cfg.minRelevance &&
+    signals.anchorCategoryHits >= 1
+  ) return "qa";
 
   return "skip";
 }
@@ -1559,6 +1865,7 @@ async function seedReplies(
   thread: WaThread,
   postId: string,
   runId: string,
+  publishDecision: string,
   stats: RunStats,
 ): Promise<void> {
   for (const reply of thread.replies) {
@@ -1586,6 +1893,7 @@ async function seedReplies(
           importRunId:      runId,
           relevanceScore:   reply.scores.medicalRelevanceScore,
           threadConfidence: thread.threadConfidence,
+          publishDecision,
           medicalRisk:      "low",
         },
       });
@@ -1598,7 +1906,7 @@ async function seedReplies(
   }
 }
 
-async function seedThread(thread: WaThread, runId: string, stats: RunStats): Promise<void> {
+async function seedThread(thread: WaThread, runId: string, publishDecision: string, stats: RunStats): Promise<void> {
   const existing = await prisma.post.findUnique({
     where: { waMessageKey: thread.anchor.waMessageKey },
     select: { id: true },
@@ -1607,7 +1915,7 @@ async function seedThread(thread: WaThread, runId: string, stats: RunStats): Pro
   if (existing) {
     stats.skippedDuplicates++;
     await enqueuePostIngest({ type: "create", postId: existing.id }, { jobId: existing.id });
-    await seedReplies(thread, existing.id, runId, stats);
+    await seedReplies(thread, existing.id, runId, publishDecision, stats);
     return;
   }
 
@@ -1627,6 +1935,7 @@ async function seedThread(thread: WaThread, runId: string, stats: RunStats): Pro
         importRunId:      runId,
         relevanceScore:   thread.anchor.scores.medicalRelevanceScore,
         threadConfidence: thread.threadConfidence,
+        publishDecision,
         medicalRisk:      "low",
       },
     });
@@ -1640,7 +1949,7 @@ async function seedThread(thread: WaThread, runId: string, stats: RunStats): Pro
   await enqueuePostIngest({ type: "create", postId: post.id });
   await new Promise<void>(r => setTimeout(r, 50));
 
-  await seedReplies(thread, post.id, runId, stats);
+  await seedReplies(thread, post.id, runId, publishDecision, stats);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -1797,7 +2106,7 @@ async function main(): Promise<void> {
     // ── Classify (split scores) ──
     const scored: ScoredMessage[] = filteredKept.map(m => {
       const scores = classifyMessage(m, embMap, refVecs);
-      return { ...m, scores, relevanceScore: scores.medicalRelevanceScore, categoryHits: scores.categoryHits };
+      return { ...m, scores, relevanceScore: scores.medicalRelevanceScore, categoryHits: scores.categoryHits, blendedScore: scores.blendedScore };
     });
 
     // ── Adaptive config (per run segment, no global mutations) ──
@@ -1870,10 +2179,10 @@ async function main(): Promise<void> {
       );
       const stagingRows = messages.map(msg => {
         const sm         = scoredByKey.get(msg.waMessageKey);
-        const dropReason = droppedByKey.get(msg.waMessageKey) ?? null;
+        const dropReason = (droppedByKey.get(msg.waMessageKey) ?? null) as DropReason | null;
         const wasDropped = dropReason !== null || sm === undefined;
         const scores_    = sm?.scores;
-        const contentType: string | null = scores_ ? classifyContentType(msg, scores_) : null;
+        const contentType = (scores_ ? classifyContentType(msg, scores_) : null) as PrismaContentType | null;
         return {
           waMessageKey:          msg.waMessageKey,
           importRunId:           run!.id,
@@ -1963,8 +2272,9 @@ async function main(): Promise<void> {
         const record  = buildDecisionRecord(thread, gate, run.id, signals, cfg, llmReviewMessages);
         decisionRecords.push(record);
 
+        const canonicalDecision = gate === "auto" ? "auto_publish" : gate === "qa" ? "qa_review" : "archive_only";
         if (gate === "auto") {
-          await seedThread(thread, run.id, stats);
+          await seedThread(thread, run.id, canonicalDecision, stats);
         } else if (gate === "qa") {
           stats.qaReviewThreads++;
         }
@@ -1974,6 +2284,31 @@ async function main(): Promise<void> {
       const artifactPath = resolve(process.cwd(), `../import-decisions-${run.id}.jsonl`);
       writeFileSync(artifactPath, decisionRecords.map(r => JSON.stringify(r)).join("\n") + "\n");
       console.log(`\n  Decision artifact: import-decisions-${run.id}.jsonl (${decisionRecords.length} records)`);
+
+      // Persist all decision records to ThreadReview for queryable audit log
+      if (!dryRun) {
+        const anchorKeyMap = new Map(threads.map(t => [t.waThreadKey, t.anchor.waMessageKey]));
+        const reviewRows = decisionRecords.map(r => ({
+          importRunId:            r.importRunId,
+          waThreadKey:            r.waThreadKey,
+          anchorMessageKey:       anchorKeyMap.get(r.waThreadKey) ?? "",
+          publishDecision:        r.publishDecision,
+          threadCohesionScore:    r.threadCohesionScore,
+          publishConfidenceScore: r.publishConfidenceScore,
+          decisionReasons:        r.decisionReasons,
+          llmAssistedCount:       r.llmAssistedAttachments,
+          llmFailedCount:         r.llmFailedAttachments,
+          requiresHumanReview:    r.requiresHumanReview,
+        }));
+        const REVIEW_CHUNK = 50;
+        for (let i = 0; i < reviewRows.length; i += REVIEW_CHUNK) {
+          await prisma.threadReview.createMany({
+            data: reviewRows.slice(i, i + REVIEW_CHUNK),
+            skipDuplicates: true,
+          });
+        }
+        console.log(`  ThreadReview:      persisted ${reviewRows.length} records`);
+      }
 
       // Also write a scrubbed QA-only JSON for human review
       const qaThreads = threads.filter((_, i) => decisionRecords[i]?.requiresHumanReview);

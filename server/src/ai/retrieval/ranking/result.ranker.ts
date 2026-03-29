@@ -10,6 +10,20 @@ const TYPE_WEIGHT = {
   reply: 0.90,
 };
 
+function importConfidenceFactor(chunk: RetrievalChunk): number {
+  // Only adjust imported archive content — regular forum posts are unaffected.
+  if (!chunk.isImportedArchive) return 1;
+  // Centered at 50: scores below 50 penalise, scores above 50 boost.
+  // threadConfidence range: [0.80, 1.20]  relevanceScore range: [0.85, 1.15]
+  const conf = chunk.threadConfidence != null
+    ? 1 + ((chunk.threadConfidence - 50) / 50) * 0.20
+    : 1;
+  const rel = chunk.medicalRelevanceScore != null
+    ? 1 + ((chunk.medicalRelevanceScore - 50) / 50) * 0.15
+    : 1;
+  return conf * rel;
+}
+
 function recencyFactor(createdAt?: string): number {
   if (!createdAt) return 1;
 
@@ -33,7 +47,7 @@ export function rankChunks(
       ? TYPE_WEIGHT[chunk.type ?? "post"]
       : 1;
     const recency = chunk.source === "community" ? recencyFactor(chunk.createdAt) : 1;
-    const finalScore = chunk.score * sourceWeight * typeWeight * recency;
+    const finalScore = chunk.score * sourceWeight * typeWeight * recency * importConfidenceFactor(chunk);
 
     return {
       ...chunk,

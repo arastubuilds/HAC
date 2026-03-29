@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../infra/redis.js";
+import { getRedisConnection } from "../infra/redis.js";
 import { REPLY_INGEST_QUEUE, type ReplyIngestJob } from "../queues/replyIngest.queue.js";
 import { prisma } from "../infra/prisma.js";
 import { deleteReplyVectors, ingestText } from "../services/ingest.service.js";
@@ -46,7 +46,13 @@ Reply: ${reply.content}
         userId: reply.userId,
         title: reply.post.title,
         createdAt: reply.createdAt.toISOString(),
-        ...(reply.originPlatform && { originPlatform: reply.originPlatform }),
+        ...(reply.originPlatform   != null && { originPlatform:        reply.originPlatform }),
+        ...(reply.waThreadKey      != null && { waThreadKey:           reply.waThreadKey }),
+        ...(reply.importRunId      != null && { importRunId:           reply.importRunId }),
+        ...(reply.publishDecision  != null && { publishDecision:       reply.publishDecision }),
+        ...(reply.threadConfidence != null && { threadConfidence:      reply.threadConfidence }),
+        ...(reply.relevanceScore   != null && { medicalRelevanceScore: reply.relevanceScore }),
+        isImportedArchive: reply.originPlatform != null,
       });
 
       console.log(`Ingestion complete for reply ${replyId}`);
@@ -56,7 +62,7 @@ Reply: ${reply.content}
     }
   },
   {
-    connection: redisConnection,
+    connection: getRedisConnection(),
     concurrency: 5,
   }
 );

@@ -8,5 +8,9 @@ export interface Citation {
     snippet?: string
     parentPostId?: string
     originPlatform?: string
+    // imported-archive provenance (only present when isImportedArchive === true)
+    isImportedArchive?: boolean
+    publishDecision?: string
+    threadConfidence?: number
 }
 

@@ -12,6 +12,12 @@ interface IngestMetadata {
   createdAt?: string;
   type?: string;
   originPlatform?: string;
+  waThreadKey?: string;
+  importRunId?: string;
+  publishDecision?: string;
+  threadConfidence?: number;
+  medicalRelevanceScore?: number;
+  isImportedArchive?: boolean;
 }
 
 export async function ingestText(

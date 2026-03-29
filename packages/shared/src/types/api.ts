@@ -45,6 +45,28 @@ export type ReplyResponse = {
   createdAt: string;
 };
 
+// ─── Thread Reviews ───────────────────────────────────────────────────────────
+
+export type ThreadReview = {
+  id: string;
+  importRunId: string;
+  waThreadKey: string;
+  anchorMessageKey: string;
+  publishDecision: string;
+  threadCohesionScore: number;
+  publishConfidenceScore: number;
+  decisionReasons: string[];
+  llmAssistedCount: number;
+  llmFailedCount: number;
+  requiresHumanReview: boolean;
+  reviewStatus: string;
+  reviewDecision: string | null;
+  reviewReason: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  createdAt: string;
+};
+
 // ─── Citations ────────────────────────────────────────────────────────────────
 
 export type Citation = {

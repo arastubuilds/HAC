@@ -16,6 +16,12 @@ export interface RetrievalChunk {
     citationIndex?: number;
     score: number;
     originPlatform?: string;
+    waThreadKey?: string;
+    importRunId?: string;
+    publishDecision?: string;
+    threadConfidence?: number;
+    medicalRelevanceScore?: number;
+    isImportedArchive?: boolean;
 }
 
 export interface ThreadReply {

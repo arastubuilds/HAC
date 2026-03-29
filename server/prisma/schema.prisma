@@ -53,6 +53,7 @@ model Post {
   relevanceScore   Float?
   threadConfidence Float?
   medicalRisk      String?
+  publishDecision  String?
 
   @@index([createdAt])
   @@index([userId])
@@ -78,6 +79,7 @@ model Reply {
   relevanceScore   Float?
   threadConfidence Float?
   medicalRisk      String?
+  publishDecision  String?
 
   @@index([postId])
   @@index([userId])
@@ -113,6 +115,7 @@ model ImportRun {
   embedFailures     Int              @default(0)
   dbWriteFailures   Int              @default(0)
   messageStagings   MessageStaging[]
+  threadReviews     ThreadReview[]
 }
 
 model MessageStaging {
@@ -138,6 +141,32 @@ model MessageStaging {
 
   @@unique([waMessageKey, importRunId])
   @@index([importRunId])
+}
+
+model ThreadReview {
+  id                     String    @id @default(uuid())
+  importRunId            String
+  importRun              ImportRun @relation(fields: [importRunId], references: [id], onDelete: Cascade)
+  waThreadKey            String
+  anchorMessageKey       String
+  publishDecision        String
+  threadCohesionScore    Float
+  publishConfidenceScore Float
+  decisionReasons        String[]
+  llmAssistedCount       Int       @default(0)
+  llmFailedCount         Int       @default(0)
+  requiresHumanReview    Boolean   @default(false)
+  reviewStatus           String    @default("pending")
+  reviewDecision         String?
+  reviewReason           String?
+  reviewedAt             DateTime?
+  reviewedBy             String?
+  createdAt              DateTime  @default(now())
+
+  @@unique([waThreadKey, importRunId])
+  @@index([importRunId])
+  @@index([reviewStatus])
+  @@index([requiresHumanReview])
 }
 
 enum Language {

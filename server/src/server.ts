@@ -4,6 +4,7 @@ import { postsRoutes } from "./api/routes/posts.route.js";
 import { queryRoutes } from "./api/routes/query.route.js";
 import { authRoutes } from "./api/routes/auth.route.js";
 import { repliesRoutes } from "./api/routes/replies.route.js";
+import { adminReviewRoutes } from "./api/routes/adminReview.routes.js";
 import jwtPlugin from "./plugins/jwt.plugin.js";
 import { env } from "./config/env.js";
 
@@ -37,6 +38,7 @@ export async function buildServer() {
     app.register(postsRoutes,  {prefix: "/posts"});
     app.register(queryRoutes,  {prefix: "/query"});
     app.register(repliesRoutes);
+    app.register(adminReviewRoutes, { prefix: "/admin/reviews" });
     return app;
 }
 

@@ -381,6 +381,7 @@ async function runPublish(): Promise<void> {
       threadConfidence: fix.cohesionScore,
       llmAssistedCount: 0,
       llmFailedCount:   0,
+      llmDecisions:     [],
     } satisfies WaThread;
 
     const gate = publishGate(mockThread, cfg, signals, new Set());

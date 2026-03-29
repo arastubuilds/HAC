@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../infra/redis.js";
+import { getRedisConnection } from "../infra/redis.js";
 import { POST_INGEST_QUEUE, type PostIngestJob } from "../queues/postIngest.queue.js";
 import { prisma } from "../infra/prisma.js";
 import { deletePostVectors, ingestText } from "../services/ingest.service.js";
@@ -49,7 +49,13 @@ export const postIngestWorker = new Worker<PostIngestJob>(
           postId,
           title: post.title,
           createdAt: post.createdAt.toISOString(),
-          ...(post.originPlatform && { originPlatform: post.originPlatform }),
+          ...(post.originPlatform    != null && { originPlatform:         post.originPlatform }),
+          ...(post.waThreadKey       != null && { waThreadKey:            post.waThreadKey }),
+          ...(post.importRunId       != null && { importRunId:            post.importRunId }),
+          ...(post.publishDecision   != null && { publishDecision:        post.publishDecision }),
+          ...(post.threadConfidence  != null && { threadConfidence:       post.threadConfidence }),
+          ...(post.relevanceScore    != null && { medicalRelevanceScore:  post.relevanceScore }),
+          isImportedArchive: post.originPlatform != null,
         });
 
         console.log(`Ingestion complete for post ${postId}`);
@@ -59,7 +65,7 @@ export const postIngestWorker = new Worker<PostIngestJob>(
     }
     },
   {
-    connection: redisConnection,
+    connection: getRedisConnection(),
     concurrency: 5,
   }
 );

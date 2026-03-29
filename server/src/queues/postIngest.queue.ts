@@ -1,5 +1,5 @@
 import { type JobsOptions, Queue } from "bullmq";
-import { redisConnection } from "../infra/redis.js";
+import { getRedisConnection } from "../infra/redis.js";
 
 /**
  * Queue name
@@ -18,7 +18,7 @@ export interface PostIngestJob {
  * Queue instance
  */
 export const postIngestQueue = new Queue<PostIngestJob>(POST_INGEST_QUEUE, {
-  connection: redisConnection,
+  connection: getRedisConnection(),
   defaultJobOptions: {
     attempts: 5, // retry up to 5 times
     backoff: {

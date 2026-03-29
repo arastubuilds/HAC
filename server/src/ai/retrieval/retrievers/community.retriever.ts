@@ -51,6 +51,24 @@ export class CommunityRetriever implements Retriever {
           const originPlatform = asString(match.metadata?.originPlatform);
           if (originPlatform) chunk.originPlatform = originPlatform;
 
+          const waThreadKey = asString(match.metadata?.waThreadKey);
+          if (waThreadKey) chunk.waThreadKey = waThreadKey;
+
+          const importRunId = asString(match.metadata?.importRunId);
+          if (importRunId) chunk.importRunId = importRunId;
+
+          const publishDecision = asString(match.metadata?.publishDecision);
+          if (publishDecision) chunk.publishDecision = publishDecision;
+
+          const threadConfidence = asNumber(match.metadata?.threadConfidence);
+          if (threadConfidence !== undefined) chunk.threadConfidence = threadConfidence;
+
+          const medicalRelevanceScore = asNumber(match.metadata?.medicalRelevanceScore);
+          if (medicalRelevanceScore !== undefined) chunk.medicalRelevanceScore = medicalRelevanceScore;
+
+          const isImportedArchive = match.metadata?.isImportedArchive;
+          if (isImportedArchive === true || isImportedArchive === "true") chunk.isImportedArchive = true;
+
           return [chunk];
         })
       );

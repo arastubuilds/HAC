@@ -4,6 +4,7 @@ import type {
   ReplyResponse,
   PaginatedResponse,
   QueryStreamEvent,
+  ThreadReview,
 } from "../types/api.js";
 
 export type ApiClientOptions = {
@@ -62,6 +63,10 @@ export class ApiClient {
 
   del<T>(path: string): Promise<T> {
     return this.request<T>("DELETE", path);
+  }
+
+  patch<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>("PATCH", path, body);
   }
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
@@ -123,6 +128,21 @@ export class ApiClient {
 
   deleteReply(postId: string, replyId: string): Promise<void> {
     return this.del<void>(`/posts/${postId}/replies/${replyId}`);
+  }
+
+  // ─── Admin reviews ────────────────────────────────────────────────────────
+
+  getReviews(params?: { status?: string; importRunId?: string; publishDecision?: string }): Promise<ThreadReview[]> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.importRunId) qs.set("importRunId", params.importRunId);
+    if (params?.publishDecision) qs.set("publishDecision", params.publishDecision);
+    const q = qs.toString();
+    return this.get<ThreadReview[]>(`/admin/reviews${q ? `?${q}` : ""}`);
+  }
+
+  resolveReview(id: string, decision: "approved" | "rejected", reason: string): Promise<void> {
+    return this.patch<void>(`/admin/reviews/${id}`, { decision, reason });
   }
 
   // ─── Query (SSE streaming) ─────────────────────────────────────────────────

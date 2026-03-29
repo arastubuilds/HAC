@@ -1,5 +1,5 @@
 import { type JobsOptions, Queue } from "bullmq";
-import { redisConnection } from "../infra/redis.js";
+import { getRedisConnection } from "../infra/redis.js";
 
 export const REPLY_INGEST_QUEUE = "reply_ingest";
 
@@ -9,7 +9,7 @@ export interface ReplyIngestJob {
 }
 
 export const replyIngestQueue = new Queue<ReplyIngestJob>(REPLY_INGEST_QUEUE, {
-  connection: redisConnection,
+  connection: getRedisConnection(),
   defaultJobOptions: {
     attempts: 5,
     backoff: {

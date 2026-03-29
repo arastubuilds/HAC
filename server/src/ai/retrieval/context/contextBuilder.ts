@@ -21,7 +21,10 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
                 ...(chunk.type !== undefined && { type: chunk.type }),
                 snippet: chunk.text.slice(0, 120),
                 ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
-                ...(chunk.originPlatform && { originPlatform: chunk.originPlatform }),
+                ...(chunk.originPlatform   && { originPlatform:   chunk.originPlatform }),
+                ...(chunk.isImportedArchive  && { isImportedArchive:  chunk.isImportedArchive }),
+                ...(chunk.publishDecision    && { publishDecision:    chunk.publishDecision }),
+                ...(chunk.threadConfidence  != null && { threadConfidence: chunk.threadConfidence }),
             }
             citations.push(citation);
             return `
@@ -80,7 +83,10 @@ export function buildContextWithThreads(
         ...(chunk.type !== undefined && { type: chunk.type }),
         snippet: chunk.text.slice(0, 120),
         ...(chunk.type === "reply" && { parentPostId: chunk.parentPostId }),
-        ...(chunk.originPlatform && { originPlatform: chunk.originPlatform }),
+        ...(chunk.originPlatform   && { originPlatform:   chunk.originPlatform }),
+        ...(chunk.isImportedArchive  && { isImportedArchive:  chunk.isImportedArchive }),
+        ...(chunk.publishDecision    && { publishDecision:    chunk.publishDecision }),
+        ...(chunk.threadConfidence  != null && { threadConfidence: chunk.threadConfidence }),
       });
       return `SOURCE [${currIndex}]\ntype: ${chunk.source}\ntitle: ${chunk.title ?? "Unknown"}\ncontent:\n${chunk.text}`;
     }).join("\n\n");
