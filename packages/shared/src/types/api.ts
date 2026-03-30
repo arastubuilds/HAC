@@ -52,6 +52,20 @@ export type ThreadReview = {
   importRunId: string;
   waThreadKey: string;
   anchorMessageKey: string;
+  anchorPreview?: string | null;
+  anchorSenderPseudonym?: string | null;
+  anchorTimestamp?: string | null;
+  candidateThread?: {
+    postId: string;
+    title: string;
+    content: string;
+    replies: Array<{
+      id: string;
+      content: string;
+      createdAt: string;
+      authorName: string;
+    }>;
+  } | null;
   publishDecision: string;
   threadCohesionScore: number;
   publishConfidenceScore: number;

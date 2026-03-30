@@ -23,6 +23,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(reviews);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to fetch reviews";
+    if (/Unauthorized|401/.test(message)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

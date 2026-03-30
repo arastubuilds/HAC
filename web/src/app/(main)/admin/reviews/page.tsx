@@ -2,15 +2,23 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { getPendingReviews } from "@/services/review.service";
 import { ReviewActions } from "./ReviewActions";
+import { ReviewPreviewModal } from "./ReviewPreviewModal";
+import type { ThreadReview } from "@hac/shared/types";
 
 export const metadata: Metadata = { title: "Review Queue — HAC" };
 
 export default async function AdminReviewsPage() {
-  let reviews;
+  let reviews: ThreadReview[] = [];
+  let loadError: string | null = null;
   try {
     reviews = await getPendingReviews();
-  } catch {
-    redirect("/login");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to load review queue";
+    if (/unauthorized|401/i.test(message)) {
+      redirect("/login");
+    }
+    loadError = message;
+    reviews = [];
   }
 
   return (
@@ -23,6 +31,12 @@ export default async function AdminReviewsPage() {
           </p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="mb-4 rounded-md border border-border bg-card px-4 py-3 text-sm text-error">
+          Failed to load reviews: {loadError}
+        </div>
+      )}
 
       {reviews.length === 0 ? (
         <div className="rounded-lg border border-border bg-card p-12 text-center text-sm text-text-secondary">
@@ -79,7 +93,10 @@ export default async function AdminReviewsPage() {
                     </ul>
                   </td>
                   <td className="px-4 py-3">
-                    <ReviewActions id={review.id} />
+                    <div className="flex flex-wrap gap-2">
+                      <ReviewPreviewModal review={review} />
+                      <ReviewActions id={review.id} />
+                    </div>
                   </td>
                 </tr>
               ))}
