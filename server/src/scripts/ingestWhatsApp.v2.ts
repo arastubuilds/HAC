@@ -48,7 +48,7 @@ let enqueueReplyIngest!: Awaited<typeof import("../queues/replyIngest.queue.js")
 
 const PARSER_VERSION     = "2.0.0";
 const CLASSIFIER_VERSION = "2.0.0";
-const THREADING_VERSION  = "3.3.0";
+const THREADING_VERSION  = "3.4.0";
 const PUBLISH_VERSION    = "3.0.0";
 const EMBEDDING_MODEL    = "intfloat/e5-base-v2";
 const LLM_MODEL          = "gemini-2.5-flash";
@@ -1057,12 +1057,21 @@ function calcThreadConfidence(t: { anchor: ScoredMessage; replies: ScoredMessage
   const avgOverlap  = subst.length > 0
     ? subst.reduce((s, r) => s + topicOverlap(t.anchor.body, r.body, embMap, t.anchor.body), 0) / subst.length
     : 0;
-  const replyRatio  = Math.min(subst.length / 5, 1.0);
-  const doctorPresent = subst.some(r => isDoctor(r.sender));
-  const doctorBonus   = doctorPresent ? 10 : 0;
+  const replyRatio      = Math.min(subst.length / 5, 1.0);
+  // Check doctor presence across ALL replies — concise clinical answers often score
+  // below minRelevance but are still valuable ("home made food is fine", "see your oncologist").
+  const doctorPresent    = t.replies.some(r => isDoctor(r.sender));
+  const doctorBonus      = doctorPresent ? 10 : 0;
+  const doctorReplyBonus = doctorPresent ? 15 : 0; // flat reward for any doctor reply
+  // Reward question+answer structure independent of vocabulary overlap.
+  const qaBonus          = (t.anchor.scores.isQuestion && t.replies.length >= 1) ? 12 : 0;
+  // Penalise monologues: anchor + replies all from same sender is a solo post, not a discussion.
+  const allSameSender    = t.replies.length >= 2 && t.replies.every(r => r.sender === t.anchor.sender);
+  const monologuePenalty = allSameSender ? -25 : 0;
 
   return clamp(
-    anchorScore * 0.35 + avgReply * 0.25 + avgOverlap * 100 * 0.25 + replyRatio * 100 * 0.15 + doctorBonus,
+    anchorScore * 0.35 + avgReply * 0.25 + avgOverlap * 100 * 0.25 + replyRatio * 100 * 0.15
+    + doctorBonus + doctorReplyBonus + qaBonus + monologuePenalty,
     0, 100,
   );
 }
@@ -1081,6 +1090,7 @@ export interface ThreadSignals {
   anchorAnchorScore: number;      // anchor's anchorLikelihoodScore
   anchorCategoryHits: number;     // anchor's raw categoryHits count
   doctorPresent: boolean;
+  isMonologue: boolean;           // true when all replies share the anchor sender (solo post)
 }
 
 export function computeThreadSignals(t: WaThread, cfg: RunConfig): ThreadSignals {
@@ -1088,7 +1098,9 @@ export function computeThreadSignals(t: WaThread, cfg: RunConfig): ThreadSignals
     r => r.scores.medicalRelevanceScore >= cfg.minRelevance,
   );
   const medicalDepth   = t.replies.length > 0 ? substantive.length / t.replies.length : 0;
-  const doctorPresent  = substantive.some(r => isDoctor(r.sender));
+  // Use all replies for doctorPresent — concise clinical answers often score below minRelevance.
+  const doctorPresent  = t.replies.some(r => isDoctor(r.sender));
+  const isMonologue    = t.replies.length >= 2 && t.replies.every(r => r.sender === t.anchor.sender);
   const anchorMedical  = t.anchor.scores.medicalRelevanceScore;
   const anchorAnchor   = t.anchor.scores.anchorLikelihoodScore;
 
@@ -1111,6 +1123,7 @@ export function computeThreadSignals(t: WaThread, cfg: RunConfig): ThreadSignals
     anchorAnchorScore:     anchorAnchor,
     anchorCategoryHits:    t.anchor.scores.categoryHits,
     doctorPresent,
+    isMonologue,
   };
 }
 
@@ -1186,12 +1199,15 @@ async function reconstructThreads(
         const now = msg.timestamp.getTime();
         const best = active.reduce((a, b) => a.lastTime > b.lastTime ? a : b);
         const gap = now - best.lastTime;
-        if (gap <= DIRECT_REPLY_WINDOW_MS) {
+        // For open-question threads, extend the window to 30 min — it's normal for
+        // someone to answer a group-chat question a few minutes later with a short reply.
+        const directWindow = best.openQuestion ? NEAR_THREAD_WINDOW_MS : DIRECT_REPLY_WINDOW_MS;
+        if (gap <= directWindow) {
           best.replies.push(msg);
           best.lastTime = now;
           if (verbose) {
             console.log(
-              `    [DIRECT_REPLY] gap=${Math.round(gap / 60000)}min medScore=${medScore} rep=${msg.scores.replyLikelihoodScore}` +
+              `    [DIRECT_REPLY${best.openQuestion ? "_OPEN_Q" : ""}] gap=${Math.round(gap / 60000)}min medScore=${medScore} rep=${msg.scores.replyLikelihoodScore}` +
               ` | ${msg.body.slice(0, 60).replace(/\n/g, " ")}`,
             );
           }
@@ -1750,15 +1766,23 @@ export function publishGate(
     t.replies.some(r => llmReviewMessages.has(r.waMessageKey))
   ) return "qa";
 
-  // Standalone strong medical post — no substantive replies yet, but anchor is solid.
-  // Require 3+ medical category hits to avoid promoting borderline anchors.
-  if (
-    signals.substantiveReplyCount === 0 &&
-    signals.anchorMedicalScore >= cfg.anchorExperientialScore &&
-    signals.anchorCategoryHits >= 3
-  ) {
-    if (signals.anchorMedicalScore < cfg.anchorMinScore) return "qa";
-    return "auto";
+  // Monologue suppression: anchor + all replies from the same sender is a solo post,
+  // not a community discussion. Skip unless the anchor is exceptionally strong.
+  if (signals.isMonologue && signals.anchorMedicalScore < 60) return "skip";
+
+  // Standalone medical post — no substantive replies yet, but anchor is solid.
+  // Strong solo experiential posts (isExperiential + 1+ category hit) are allowed through
+  // at a lower bar; require 3+ hits otherwise to avoid promoting borderline anchors.
+  if (signals.substantiveReplyCount === 0 && signals.anchorMedicalScore >= cfg.anchorExperientialScore) {
+    const strongStandalone =
+      signals.anchorCategoryHits >= 3 ||
+      (t.anchor.scores.isExperiential &&
+        signals.anchorMedicalScore >= cfg.anchorMinScore - 5 &&
+        signals.anchorCategoryHits >= 1);
+    if (strongStandalone) {
+      if (signals.anchorMedicalScore < cfg.anchorMinScore) return "qa";
+      return "auto";
+    }
   }
 
   if (signals.publishConfidenceScore >= cfg.autoPublishConf) {
@@ -2238,25 +2262,36 @@ async function main(): Promise<void> {
     }
 
     if (dryRun) {
+      // Compute decisions for every thread so we can write a comparable artifact.
+      const dryRunId = `dry-${THREADING_VERSION}-${(currentDate ?? "all").replace(/\//g, "-")}`;
+      const dryRecords: ThreadDecisionRecord[] = threads.map(t =>
+        buildDecisionRecord(t, publishGate(t, cfg, computeThreadSignals(t, cfg), llmReviewMessages), dryRunId, computeThreadSignals(t, cfg), cfg, llmReviewMessages),
+      );
+
       console.log("\n── Thread preview (dry-run, no DB writes) ──────");
-      threads.slice(0, 8).forEach((t, i) => {
-        const gate = publishGate(t, cfg, computeThreadSignals(t, cfg), llmReviewMessages);
-        const flag = gate === "auto" ? "AUTO" : gate === "qa" ? " QA " : "SKIP";
+      threads.forEach((t, i) => {
+        const rec  = dryRecords[i]!;
+        const flag = rec.publishDecision === "auto_publish" ? "AUTO" : rec.publishDecision === "qa_review" ? " QA " : "SKIP";
         const lang = t.anchor.language === "hinglish" ? " [hi]" : "      ";
         const med  = t.anchor.scores.medicalRelevanceScore.toFixed(0).padStart(3);
         const anc  = t.anchor.scores.anchorLikelihoodScore.toFixed(0).padStart(3);
+        const mono = computeThreadSignals(t, cfg).isMonologue ? " [mono]" : "";
         console.log(
-          `  [${flag}] conf=${t.threadConfidence.toFixed(0).padStart(3)}${lang} med=${med} anc=${anc} ` +
-          `replies=${t.replies.length.toString().padStart(2)} | ${t.anchor.body.slice(0, 60).replace(/\n/g, " ")}`
+          `  [${flag}] conf=${t.threadConfidence.toFixed(0).padStart(3)}${lang}${mono} med=${med} anc=${anc} ` +
+          `replies=${t.replies.length.toString().padStart(2)} | ${t.anchor.body.slice(0, 70).replace(/\n/g, " ")}`
         );
         t.replies.forEach((r, ri) => {
           console.log(
-            `         reply ${(ri + 1).toString().padStart(2)} [med=${r.scores.medicalRelevanceScore.toString().padStart(3)}] ${r.body.slice(0, 60).replace(/\n/g, " ")}`
+            `         reply ${(ri + 1).toString().padStart(2)} [med=${r.scores.medicalRelevanceScore.toString().padStart(3)}] ${r.body.slice(0, 70).replace(/\n/g, " ")}`
           );
         });
-        if (i === 7 && threads.length > 8) console.log(`  … and ${threads.length - 8} more`);
       });
-      console.log("\nDry-run complete — no DB writes.");
+
+      // Write full JSONL artifact for diffing against previous runs.
+      const artifactPath = resolve(process.cwd(), `../import-decisions-${dryRunId}.jsonl`);
+      writeFileSync(artifactPath, dryRecords.map(r => JSON.stringify(r)).join("\n") + "\n");
+      console.log(`\nDry-run artifact: import-decisions-${dryRunId}.jsonl (${dryRecords.length} records)`);
+      console.log("Dry-run complete — no DB writes.");
       continue;
     }
 

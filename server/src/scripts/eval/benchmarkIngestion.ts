@@ -98,6 +98,7 @@ interface PublishFixture {
   anchorCategoryHits: number;
   doctorPresent: boolean;
   medicalDepth: number;
+  isMonologue?: boolean;
   label: "auto_publish" | "qa_review" | "archive_only";
   notes?: string;
 }
@@ -371,6 +372,7 @@ async function runPublish(): Promise<void> {
       anchorAnchorScore:      fix.anchorAnchorScore,
       anchorCategoryHits:     fix.anchorCategoryHits,
       doctorPresent:          fix.doctorPresent,
+      isMonologue:            fix.isMonologue ?? false,
     };
 
     // Minimal mock thread — no replies in llmReviewMessages set.

@@ -9,9 +9,6 @@ content as coming from WhatsApp.
 
 Script location: `server/src/scripts/ingestWhatsApp.ts`
 Run with: `pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts`
-Dry-run: `pnpm --filter server exec tsx src/scripts/ingestWhatsApp.ts --dry-run`
-Verbose: add `--verbose` to see per-message scores, category hits, and threading decisions
-Line slice: add `--lines 114-161` to test a specific range
 
 V1 scope:
 
@@ -77,6 +74,10 @@ Drop messages matching any of the following:
   `Shukrana`
 - Repeated `दी Chapter` promotional posts
 - Bare URL-only forwards and other obvious non-support spam
+- Social media reel/link forwards (Instagram, YouTube, Facebook, Twitter) where
+  the caption contains no medical terms — these are typically motivational or
+  art-sharing posts that score misleadingly high on embedding cosine similarity
+  to emotional support topics despite having no medical content
 
 Keep short but meaningful replies such as `yes`, `same here`, or
 `I had this too` when they belong to an active discussion.
@@ -105,25 +106,30 @@ Rules:
 
 - drop messages below a minimum relevance threshold
 - keep borderline replies only when topic overlap is high enough
-- store the numeric relevance score for later QA and provenance
+- store the numeric relevance score and `categoryHits` for later QA and provenance
 
-Medical terms are grouped into semantic categories (treatment, scans, side effects,
-symptoms, care). Scoring counts unique categories hit, not unique list entries, so
-"chemo" and "chemotherapy" in the same message count as one signal, not two.
+Medical terms are grouped into semantic categories (treatment, scans, side
+effects, symptoms, care, logistics, remedies). Scoring counts unique categories
+hit, not unique list entries, so "chemo" and "chemotherapy" in the same message
+count as one signal, not two.
 
-**Side-effect density bonus:** listing multiple distinct side-effect terms (e.g.
-"mood swings, anxiety, dryness, body aches") awards a density bonus on top of the
-single category hit: `+6` for 2 matches, `+12` for 3+. This prevents substantive
-symptom-listing replies from being underscored.
+**Word-boundary matching:** all medical term checks use `\b` word boundaries
+(`matchesMedTerm`), not bare `includes()`. This prevents false positives such as
+`"pain"` matching `"paintings"` or `"ache"` matching `"reached"`, which would
+otherwise inflate `categoryHits` and push unrelated messages above the anchor
+threshold.
 
-V1 thresholds on a `0-100` scale:
+**Supplementary embedding score:** cosine similarity against five reference
+medical topics using the embeddings model. Adds up to 15 points for messages
+that are semantically relevant but use no mapped keywords (e.g. Hinglish
+messages with no synonymized terms). This is a supplementary signal only — it
+cannot qualify a 0-reply post for auto-publish on its own; `categoryHits >= 1`
+is required for that gate.
 
-- `< 15`: drop unconditionally
-- `15-29`: eligible for near-thread relaxation (see Phase 5) but cannot enter
-  normal threading or anchor a new thread
-- `30-39`: can enter threading but cannot attach to a thread via overlap alone
-- `40-54`: eligible to attach as a reply to a high-overlap thread; cannot start a new thread
-- `>= 55`: eligible to anchor a new thread
+**Adaptive thresholds:** thresholds are computed per-run from the score
+distribution of that day's messages (P40, P50, P60, P75 percentiles). This
+prevents a low-activity day from using the same bars as a dense medical discussion
+day, and avoids over-filtering quiet days or under-filtering noisy ones.
 
 ---
 
@@ -148,102 +154,101 @@ preserving author separation.
 
 ## Phase 5 — Thread Reconstruction
 
-Goal: convert chat into forum-shaped threads without using an LLM at parse time.
+Goal: convert chat into forum-shaped threads using a hybrid of cheap heuristics
+and selective LLM calls.
 
-Thread anchors:
+The LLM (Gemini 2.5 Flash) is used only in ambiguous overlap bands — it is never
+called for clear attach or clear split decisions. Use `--no-llm` to disable LLM
+calls and fall back to heuristic-only logic (useful for testing and when the
+Gemini free-tier daily quota is exhausted).
+
+**Rate limiting:** the Gemini free tier allows 5 RPM. A sliding-window rate
+limiter tracks the last 5 call timestamps and waits before firing the next call
+if the window hasn't cleared. Cache hits (same anchor + message body) bypass the
+limiter entirely.
+
+### Thread anchors
 
 - medically relevant question-like messages
 - support-seeking requests
 - unanswered single-message questions, which still become posts
 
-Heuristics:
+### Topic overlap
 
-1. Start a new thread when a question-like message appears and either there is
-   no active thread, the gap from the last substantive on-topic message is
-   greater than 90 minutes,
-   or topic overlap with the current thread anchor is low.
-2. Treat follow-up questions as replies when they stay on the same topic and
-    arrive inside the active thread window.
-3. Append substantive non-question messages as replies for up to 5 hours from
-   the anchor.
-4. Ignore non-question chatter when no active thread exists.
+Compare each new message against the thread anchor and recent substantive replies
+using a blended signal:
 
-This avoids the earlier failure mode where every `?` became a new post.
-
-Topic overlap should be explicit, not intuitive. Compare each new message
-against the thread anchor and recent substantive replies using a blended signal:
-
-- **60% lexical Jaccard** — token overlap after stop-word removal
+- **60% embedding cosine** (normalized from the `[0.75, 1.0]` range of
+  `e5-base-v2` / `multilingual-e5-base`) — or lexical Jaccard fallback when
+  embeddings are unavailable
 - **40% medical-category Jaccard** — canonical medical terms matched via a
   synonym map that covers romanized Hinglish variants (e.g. `kimo` → `chemo`,
   `dard` → `pain`). Devanagari script is not supported in V1.
 
-**Sender-aware threading:** effective overlap includes a sender bonus that
-captures conversational flow (A asks, B answers, A follows up):
+Hinglish detection shifts weights to 40% embedding / 60% medical Jaccard for
+messages with Hinglish marker words, because `e5-base-v2` embeds transliterated
+Hindi poorly.
 
-- `+0.12` if the message sender matches the thread anchor author
-- `+0.08` if the sender matches one of the last 3 repliers
+### Overlap thresholds (adaptive)
 
-The sender bonus is additive to the blended Jaccard overlap. It nudges borderline
-messages into the attach zone but cannot single-handedly push topically unrelated
-messages over the threshold.
+- `>= 0.35` effective overlap: attach unconditionally (ATTACH)
+- `< 0.20` effective overlap: split or discard (SPLIT)
+- `0.20–0.35`: middle band — use LLM or additional heuristics
 
-V1 behavior:
+### SPLIT branch — pre-split LLM checks
 
-- attach to existing thread when effective overlap is `>= 0.35`, provided the
-  message scores `>= 35`
-- split into a new thread when effective overlap is `< 0.20` and the message
-  scores `>= 55`
-- **middle band** (`0.20–0.35`): attach only if at least one extra signal is
-  present:
-  1. **high relevance** (`>= 50`)
-  2. **shared medical category** — message and thread context share at least one
-     `TERM_CATEGORIES` category hit (treatment, scans, side effects, symptoms, care)
-  3. **sender match** — sender bonus > 0
-  4. **recent activity** — thread had activity within the last 15 minutes
-  - if none of these hold, the message is added to the unattached pool for the
-    backward pass (see below)
-- **near-thread relaxation** (`score 15-29`): messages below `MIN_RELEVANCE` (30)
-  but above 15 can attach to threads that had activity within the last 30 minutes,
-  provided they share at least one medical category or have a sender match. This
-  captures conversational replies (thank-yous, doctor encouragement, symptom lists)
-  that score low individually but clearly belong to an active discussion.
+The SPLIT threshold fires before the LLM path. Two categories of message are
+routed through the LLM instead of auto-splitting, because the overlap metric
+structurally fails them:
 
-Low overlap means:
+1. **Q-A back-references** — messages opening with `"I also had the same issue"`,
+   `"same problem"`, etc. arrive with near-zero token overlap against a question
+   they are directly answering. A heuristic fast-path detects these openers and
+   attaches without an LLM call when the active thread has a recent open question.
+   Remaining ambiguous answers to open questions go to the LLM.
 
-- start a new thread if the message is independently relevant
-- otherwise skip it as drift or chatter
+2. **Deictic follow-ups** — short questions containing only deictic pronouns
+   (`"How often this should be done?"`, `"Can Murabba be consumed??"`) carry no
+   topic keywords of their own and always score near-zero overlap. If a recent
+   active thread exists and the message has no independent medical terms, route
+   through the LLM before splitting.
 
-Multiple active threads:
+### Middle band
 
-- allow `2-3` active candidate threads in the same time window
-- attach a reply to the highest effective-overlap eligible thread instead of
-  assuming only one open conversation at a time
+In the middle band (`0.20–0.35`):
 
-Reply cap:
+- Gap > `GAP_NEW_THREAD_MS` + can anchor + independent → new thread
+- Strong anchor candidate (score high, can anchor) → prefer new thread (A+E rule)
+- Otherwise: doctor/sender fast-path if `bestEffective > 0.05` → attach directly
+  (requires minimum overlap to prevent zero-overlap doctor messages from attaching
+  across unrelated topics). Below that threshold → LLM.
+- LLM pre-filter: skip the LLM for messages with no medical/care/remedy terms.
 
-- use a soft cap of roughly `15` substantive replies per imported thread
-- after the cap, only append replies with raw content overlap `>= 0.5`
-- if overlap weakens after the cap, the message goes to the unattached pool
+### Near-thread relaxation (RELAX path)
 
-Thread age:
+Messages below `MIN_RELEVANCE` can still attach to a very recently active thread
+via any of: shared medical category, related medical category, or doctor sender.
 
-- keep the hard maximum reply window at `5 hours`
-- once a thread is older than `2 hours`, a fresh question-like message should
-  default to a new thread unless topic overlap is very strong
+Sender match alone attaches only when `score >= MIN_RELEVANCE`. This prevents
+pure emotional filler (`"Everything will be fine"`) from attaching via authorship,
+while still allowing a same-sender continuation that reaches the relevance floor.
 
-**Backward-looking reply attachment:** after the chronological forward pass
-finalizes all threads, a second pass checks unattached messages against finalized
-threads. This catches delayed responses where someone answers a question after
-intervening chatter:
+### Multiple active threads
 
-- only considers messages scoring `>= 35`
-- only checks threads whose anchor is within `3 hours` before the message
-- uses a slightly relaxed effective overlap threshold of `0.30` (vs `0.35` forward)
-- sender bonus applies in this pass too
-- attached replies are re-sorted chronologically and thread confidence recalculated
+- Allow 2–3 active candidate threads in the same time window
+- Attach a reply to the highest-overlap eligible thread
+- Evict the weakest thread when the active pool is full
 
-This prevents one active day in WhatsApp from collapsing into one oversized post.
+### Reply cap
+
+- Soft cap of roughly 15 substantive replies per imported thread
+- After the cap, only append replies with strong topic overlap (`>= 0.5` raw)
+- Prevents one active WhatsApp day from collapsing into one oversized post
+
+### Thread age
+
+- Hard maximum reply window: 5 hours
+- After 2 hours, a fresh question defaults to a new thread unless overlap is very strong
 
 ---
 
@@ -262,33 +267,39 @@ For each reconstructed thread:
 `waThreadKey` must remain stable across reruns. Do not derive it from the final
 set of grouped replies, because thread heuristics may change over time.
 
-Thread confidence scoring should determine structural publishability.
+Thread confidence scoring determines structural publishability.
 
-Suggested confidence inputs:
+Confidence inputs:
 
-- parse quality of all messages in the thread
-- anchor relevance score
-- average topic overlap across replies
-- number of substantive replies vs skipped drift
-- title quality and coherence of the final thread
+- anchor relevance score (35%)
+- average reply relevance score (25%)
+- average topic overlap across replies (25%)
+- substantive reply ratio (15%)
+- +10 bonus if any reply is doctor-authored
 
-Use confidence bands:
+**Publish gate:**
 
-- high confidence: auto-publish
-- medium confidence: import but mark for manual QA
-- low confidence: do not publish as first-class forum content
+- `>= AUTO_PUBLISH_CONF`: auto-publish
+- `>= QA_CONF`: import with manual QA flag
+- `< QA_CONF`: skip
 
-V1 publish thresholds on a `0-100` scale:
+Both thresholds are adaptive (derived from the same per-day percentile
+distribution as the relevance thresholds).
 
-- `>= 75`: auto-publish
-- `55-74`: import with manual QA flag
-- `< 55`: do not publish as first-class forum content
+**0-reply exception:** unanswered questions auto-publish if:
+- `anchor.relevanceScore >= ANCHOR_EXPERIENTIAL_SCORE`, AND
+- `anchor.categoryHits >= 1` (at least one genuine keyword-matched medical
+  category hit)
+
+The `categoryHits` requirement guards against embedding-only anchors — art
+appreciation comments, motivational quotes, and social forwards that score well
+on cosine similarity to "emotional support" topics but contain no medical
+terminology.
 
 Medical risk classification is out of scope for V1. All imported posts and replies
-carry `medicalRisk = "low"` as a default placeholder; the field exists on the schema
-for future use.
+carry `medicalRisk = "low"` as a default placeholder.
 
-Title generation should be cleaned, not raw first-80-character truncation:
+Title generation:
 
 - remove greetings such as `Hello friends`
 - if the anchor message contains a `?`, use the first question sentence as the title
@@ -297,9 +308,9 @@ Title generation should be cleaned, not raw first-80-character truncation:
 
 Examples:
 
-- `Hello friends ... loose motion after treatment?` ->
+- `Hello friends ... loose motion after treatment?` →
   `Loose motion after treatment?`
-- `is anyone on zoladex ... what are the side effects?` ->
+- `is anyone on zoladex ... what are the side effects?` →
   `Is anyone on zoladex ... what are the side effects?`
 
 ---
@@ -345,10 +356,6 @@ Product behavior:
 - show a subtle `WhatsApp archive` badge on imported posts/replies
 - expose the same indicator in retrieval citations
 
-This requires explicit provenance fields on `Post` / `Reply` before
-implementation. `ImportRun` is complementary run-level audit storage, not a
-replacement for row-level provenance.
-
 ---
 
 ## Phase 8 — Idempotent Seed
@@ -384,6 +391,30 @@ No separate worker topology is needed for V1.
 
 ---
 
+## Embeddings Model
+
+Current: `intfloat/e5-base-v2` (English-only, 768 dims)
+
+**Planned upgrade: `intfloat/multilingual-e5-base`**
+
+- Same architecture and `"passage: "` / `"query: "` prefix convention — zero
+  code changes except the model name in `server/src/infra/embeddings.ts`
+- 768 dims — Pinecone index is compatible
+- Confirmed on HuggingFace Inference API
+- Materially better for transliterated Hindi / Hinglish messages
+
+`e5-base-v2` is English-only and embeds Hinglish poorly, which weakens the 60%
+embedding component of `topicOverlap` for mixed-language messages. The Hinglish
+weight shift (40% embedding / 60% medical Jaccard) in `topicOverlap` is a
+compensating heuristic, not a fix.
+
+**Further upgrade (if available on HF Inference API):**
+`l3cube-pune/hing-roberta-mixed` — trained on 52M sentences of real WhatsApp /
+Twitter Hinglish, 768 dims, 12–15% F1 improvement on code-mixed tasks over
+generic multilingual models.
+
+---
+
 ## Initial Test Ranges
 
 Use these `_chat.txt` line ranges as the first import slices before attempting a
@@ -397,7 +428,8 @@ Atomic tests:
 | 1 | `27-37` | Unanswered symptom question | `1` post, `0` replies |
 | 2 | `78-81` | Nutritionist request | `1` post, not merged into nearby side-effect discussion |
 | 3 | `98-99` | Short-reply handling | `1` post and `1` short reply (`yes`) |
-| 4+5 | `114-161` | Combined Zoladex thread (side effects + weight gain) | `1` post with `10` replies covering side effects, lived experience, doctor advice, and weight-gain subthread |
+| 4 | `114-143` | Clean Zoladex side-effects thread | `1` high-confidence post with multiple replies |
+| 5 | `144-161` | Same-topic but distinct subthread | New post for Zoladex weight gain, separate from Case 4 |
 | 6 | `503-536` | Strong doctor + lived-experience thread | `1` high-confidence post with several replies |
 
 Stress tests:
@@ -413,6 +445,15 @@ Negative-control slices:
 |------|------------|------|------------------|
 | N1 | `19-26` | Promo/ad filtering | No imported posts or replies |
 | N2 | `100-106` | Devotional filtering | No imported posts or replies |
+
+Day-level tests completed:
+
+| Date | Notes |
+|------|-------|
+| `03/11/25` | Mouth-care thread. Art message from Dr. Vineeta (`"Excellent Art really helps"`) was incorrectly attaching to mouth-care thread — fixed by requiring `bestEffective > 0.05` for doctor fast-path. |
+| `06/11/25` | Exemestane/blood pressure thread. Dr. Arshi's answer was splitting into its own thread due to near-zero Q-A overlap — fixed by back-reference heuristic + LLM in SPLIT branch. Art/social messages (`07/11/25` art day) were anchoring via embedding-only score — fixed by word-boundary matching and `categoryHits >= 1` gate. |
+| `07/11/25` | Art appreciation day. Both spurious threads eliminated by word-boundary fix and social URL filter. |
+| `09/11/25` | High-density fasting + dry-mouth day. Deictic follow-up `"How often this should be done?"` was splitting into its own thread — fixed by `isDeictic` + LLM in SPLIT branch. Gemini free-tier daily quota (20 req/day) was exhausted; all LLM calls after that fell back to NO. |
 
 Recommended order:
 
@@ -445,6 +486,22 @@ The full-day run is an evaluation step, not the first debugging step.
 
 ---
 
+## Known Issues / Deferred
+
+**Duplicate resent messages:** WhatsApp users sometimes re-paste the same message
+when it goes unnoticed. The first occurrence becomes a thread anchor; the second
+(same sender + body, hours later) gets attached as a reply via `ov ≈ 0.6` with
+itself. Fix when needed: add a post-filter dedup step after `filterNoise` that
+drops same-sender + same-body messages within a ~3hr window (match on
+`normalizedBody`, not `waMessageKey` which includes the timestamp).
+
+**Gemini free-tier daily quota:** the free tier allows 20 requests/day total.
+A dense day like `09/11/25` (70 messages) exhausts this quickly, causing all
+subsequent LLM calls to fall back to NO. Use `--no-llm` when quota is low or
+upgrade to a paid tier before full-day runs.
+
+---
+
 ## Decisions Log
 
 | Decision | Choice | Reason |
@@ -452,14 +509,19 @@ The full-day run is an evaluation step, not the first debugging step.
 | Input format | `_chat.txt` only | Keep V1 narrow and predictable |
 | Attribution | Per-sender pseudonyms | Preserve privacy without collapsing all voices |
 | Relevance scoring | Category-based scoring (unique semantic buckets, not unique list terms) | Prevents near-synonym inflation; "chemo" + "chemotherapy" = one signal |
-| Scoring thresholds | `< 30` drop, `30-39` no attachment, `40-54` reply only, `>= 55` anchor | Graduated gates keep noise out of thread anchors without over-filtering replies |
-| Topic overlap | 60% lexical Jaccard + 40% medical-category Jaccard | Medical synonyms (including romanized Hinglish) boost overlap without Devanagari support |
+| Medical term matching | Word-boundary regex (`\bterm\b`) via `matchesMedTerm` | Bare `includes()` caused false positives — `"pain"` matched `"paintings"`, inflating `categoryHits` and pushing art messages above anchor threshold |
+| Scoring thresholds | Adaptive per-day from P40/P50/P60/P75 | Fixed thresholds over-filter quiet days and under-filter dense ones |
+| Topic overlap | 60% embedding cosine + 40% medical-category Jaccard | Blended signal handles keyword-sparse messages; Hinglish messages shift to 40/60 because e5-base-v2 embeds transliterated Hindi poorly |
+| Embeddings model | `intfloat/e5-base-v2` → upgrade to `multilingual-e5-base` planned | Current model is English-only; multilingual-e5-base is a zero-friction upgrade (same dims, same prefix convention) with native Hindi support |
 | Hinglish support | Romanized synonym map only; no Devanagari script in V1 | Sufficient for this group's bilingual chat style; Devanagari deferred |
 | Language metadata | Detected via Hinglish marker words; stored in-process only | Useful for QA review and future tuning without a schema change |
-| Thread anchors | Require `>= 55` relevance | Prevents low-signal questions from fragmenting the thread space |
-| Reply attachment | Require `>= 35` relevance even at high topic overlap | Lowered from 40 to avoid dropping substantive replies that score 35-39 |
-| Title generation | Prefer first question sentence; fall back to first clause | Anchor messages are usually questions; extracting the question gives a better title |
-| Threading | Heuristic reconstruction with gap + blended topic overlap | Better than splitting on every question mark |
+| Thread reconstruction | Hybrid: cheap heuristics first, selective LLM for ambiguous band | Pure heuristics fail Q-A pairs and deictic references; LLM-first is too slow and burns rate-limited quota |
+| LLM rate limiting | Sliding-window 5 RPM limiter (free tier constraint) | Prevents `429` errors mid-run; cache hits bypass the limiter |
+| Doctor fast-path | Requires `bestEffective > 0.05` to skip LLM | Zero-overlap doctor messages (e.g. art comment inside a mouth-care thread) were attaching solely on sender prefix |
+| Q-A back-reference heuristic | Detect openers like `"I also had same issue"` + recency → free attach | Q-A pairs have near-zero token overlap; LLM call is unnecessary when the back-reference pattern is unambiguous |
+| Deictic follow-up detection | Short questions with `"this/it/that"` + no medical terms + recent thread → LLM | `"How often this should be done?"` has zero overlap with the fasting thread it follows; heuristic can't resolve it, LLM can |
+| Social URL filter | Drop Instagram/YouTube/Facebook forwards with no medical caption content | Motivational reels and art-sharing links scored high on emotional support embedding similarity but had zero medical relevance |
+| 0-reply publish gate | Require `categoryHits >= 1` for unanswered questions | Embedding-only anchors (art, motivational quotes) were auto-publishing via the 0-reply exception despite having no medical terminology |
 | Thread identity | `waThreadKey = anchor waMessageKey` | Stable reruns even if grouping heuristics evolve |
 | Reply cap | Soft cap with stronger overlap requirement after threshold | Prevent oversized, low-cohesion imported threads |
 | Confidence scoring | Structural thread-confidence score | Captures grouping quality independently of content safety |
@@ -470,9 +532,3 @@ The full-day run is an evaluation step, not the first debugging step.
 | Timestamps | Preserve original timestamps | Keep chronology and ranking intact |
 | Provenance | Visible WhatsApp badge + metadata | Imported archive should not look native |
 | Ingestion | Reuse existing BullMQ flow | Minimal new infrastructure |
-| Sender-aware threading | +0.12 anchor author, +0.08 recent replier | Captures conversational flow; can't single-handedly push unrelated messages over threshold |
-| Middle band tightening | Require extra signal (relevance, shared category, sender, or recency) | Prevents low-overlap messages from drifting into the wrong thread |
-| Near-thread relaxation | Score 15-29 can attach within 30min if category match or sender match | Captures conversational replies that score low individually but belong to active discussion |
-| Backward pass | Second pass over unattached messages against finalized threads within 3h | Catches delayed responses common in group chats |
-| Side-effect density bonus | +6 for 2 hits, +12 for 3+ within side-effect category | Listing multiple symptoms should score higher than listing one |
-| Shared medical check | Uses full `TERM_CATEGORIES`, not synonym-only `medicalCategorySet` | Synonym map is too small (10 entries); term categories cover all treatment/symptom terms |

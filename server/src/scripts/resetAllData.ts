@@ -27,7 +27,10 @@ function readArg(args: string[], name: string): string | undefined {
   return args[i + 1];
 }
 
-async function resetPostgres(): Promise<void> {
+async function resetPostgres(preserveTables: string[] = []): Promise<void> {
+  const excluded = ["_prisma_migrations", ...preserveTables]
+    .map(t => `'${t}'`)
+    .join(", ");
   try {
     await prisma.$executeRawUnsafe(`
 DO $$
@@ -37,13 +40,14 @@ BEGIN
     SELECT tablename
     FROM pg_tables
     WHERE schemaname = 'public'
-      AND tablename <> '_prisma_migrations'
+      AND tablename NOT IN (${excluded})
   LOOP
     EXECUTE format('TRUNCATE TABLE %I.%I RESTART IDENTITY CASCADE', 'public', r.tablename);
   END LOOP;
 END $$;
 `);
-    console.log("Postgres reset complete (public tables truncated, identities reset).");
+    const extra = preserveTables.length ? ", " + preserveTables.join(", ") : "";
+    console.log(`Postgres reset complete (truncated all public tables except: _prisma_migrations${extra}).`);
   } catch (err) {
     throw err;
   }
@@ -92,9 +96,13 @@ async function main(): Promise<void> {
   const skipPinecone = hasFlag(args, "skip-pinecone");
   const skipRedis = hasFlag(args, "skip-redis");
   const namespaceArg = readArg(args, "namespaces");
+  const preserveTablesArg = readArg(args, "preserve-tables");
+  const preserveTables = preserveTablesArg
+    ? preserveTablesArg.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
 
   if (!skipPg) {
-    await resetPostgres();
+    await resetPostgres(preserveTables);
   } else {
     console.log("Postgres reset skipped.");
   }
