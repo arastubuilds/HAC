@@ -408,6 +408,10 @@ const BACK_REFERENCE_PATTERNS = [
   /^mujhe bhi\b/i,
   /^mere saath bhi\b/i,
   /^hamara bhi\b/i,
+  // General "I had/faced/got the same" family — clearly contextual responses
+  /^i (also )?(had|have|faced|got|experienced) (the )?same\b/i,
+  // "Even I had..." / "Me I had..." — additive experiential, always a reply
+  /^(even |me )i (had|have|was|am)\b/i,
 ];
 
 const HINGLISH_MARKERS = [
@@ -1049,6 +1053,22 @@ function isBackReference(msg: ScoredMessage): boolean {
   return BACK_REFERENCE_PATTERNS.some(p => p.test(trimmed));
 }
 
+// An experiential message has standalone anchor value only if it says something
+// substantive beyond the experiential prefix itself. Strip the matched prefix and
+// require at least 6 meaningful words remaining — fragments like "I had during my
+// chemotherapy" (3 words after stripping) don't warrant their own thread.
+function hasSubstantiveContent(body: string): boolean {
+  const lower = body.trim().toLowerCase();
+  let stripped = lower;
+  for (const p of EXPERIENTIAL_PATTERNS) {
+    if (lower.startsWith(p)) {
+      stripped = lower.slice(p.length).trim();
+      break;
+    }
+  }
+  return stripped.split(/\s+/).filter(w => w.length > 2).length >= 6;
+}
+
 function isDeictic(msg: ScoredMessage): boolean {
   if (!msg.body.includes("?")) return false;
   const words = msg.body.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
@@ -1369,7 +1389,8 @@ async function reconstructThreads(
     const msgLower = msg.body.toLowerCase();
     const isExperientialWithMed =
       EXPERIENTIAL_PATTERNS.some(p => msgLower.includes(p)) &&
-      TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower, t)));
+      TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower, t))) &&
+      hasSubstantiveContent(msg.body);
     const isSupportSeekingWithMed =
       seeking &&
       TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower, t)));
@@ -1377,11 +1398,20 @@ async function reconstructThreads(
       question &&
       TERM_CATEGORIES.some(cat => cat.some(t => matchesMedTerm(msgLower, t)));
 
-    const independent =
+    // Back-references are definitionally contextual — "I also had the same issue",
+    // "Even I had...", "Same here" only make sense as replies to something already said.
+    // Block them from creating new anchors when active threads exist to attach to.
+    // Exception: when active is empty (first message of a date segment, cross-date
+    // context not yet established), allow anchoring as a fallback so substantive
+    // content like "Same here. I have lost 11 kg after treatment..." isn't silently lost.
+    const msgIsBackRef = isBackReference(msg);
+    const backRefAnchorAllowed = msgIsBackRef && active.length === 0;
+    const independent = (!msgIsBackRef || backRefAnchorAllowed) && (
       isAnchor(msg, cfg) ||
       (isExperientialWithMed   && anchorScore >= cfg.anchorExperientialScore) ||
       (isSupportSeekingWithMed && anchorScore >= cfg.anchorExperientialScore) ||
-      (isQuestionWithMed       && anchorScore >= cfg.anchorExperientialScore);
+      (isQuestionWithMed       && anchorScore >= cfg.anchorExperientialScore)
+    );
 
     const canAnchor = question || seeking || isExperientialWithMed;
 
@@ -1419,7 +1449,10 @@ async function reconstructThreads(
       for (let i = 0; i < active.length; i++) {
         const t = active[i];
         if (!t) continue;
-        const recent = (now - t.lastTime) <= cfg.gapNewThreadMs;
+        // Use anchor time as fallback: a question that got many early replies will have
+        // a stale lastTime even though the conversation is still in-window.
+        const recent = (now - t.lastTime) <= cfg.gapNewThreadMs
+          || (now - t.anchor.timestamp.getTime()) <= cfg.hardWindowMs;
         if (!recent) continue;
         const openQ = t.openQuestion || isQuestionLike(t.anchor) || isSupportSeeking(t.anchor);
         if (!openQ) continue;
@@ -1717,7 +1750,8 @@ async function reconstructThreads(
     if (!qThread) continue;
     const qAnchor = qThread.anchor;
     if (!qAnchor.scores.isQuestion) continue;
-    if (qThread.replies.length > 1) continue;
+    // No reply-count cap: a question thread with many replies is *more* likely to be
+    // the correct parent, not less. Rely on overlap score and time window to determine fit.
 
     let bestJ = -1;
     let bestScore = -Infinity;
