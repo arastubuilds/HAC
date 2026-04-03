@@ -14,9 +14,9 @@ function importConfidenceFactor(chunk: RetrievalChunk): number {
   // Only adjust imported archive content — regular forum posts are unaffected.
   if (!chunk.isImportedArchive) return 1;
   // Centered at 50: scores below 50 penalise, scores above 50 boost.
-  // threadConfidence range: [0.80, 1.20]  relevanceScore range: [0.85, 1.15]
+  // threadConfidence range: [0.70, 1.30]  relevanceScore range: [0.85, 1.15]
   const conf = chunk.threadConfidence != null
-    ? 1 + ((chunk.threadConfidence - 50) / 50) * 0.20
+    ? 1 + ((chunk.threadConfidence - 50) / 50) * 0.30
     : 1;
   const rel = chunk.medicalRelevanceScore != null
     ? 1 + ((chunk.medicalRelevanceScore - 50) / 50) * 0.15

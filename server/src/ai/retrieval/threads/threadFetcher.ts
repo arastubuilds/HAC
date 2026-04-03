@@ -25,7 +25,7 @@ export async function fetchThreads(replyChunks: RetrievalChunk[]): Promise<Threa
       prisma.post.findUnique({
         where: { id: postId },
         select: {
-          id: true, title: true, content: true, createdAt: true,
+          id: true, title: true, content: true, createdAt: true, threadConfidence: true,
           replies: {
             orderBy: { createdAt: "asc" },
             take: MAX_REPLIES_PER_THREAD,
@@ -39,9 +39,10 @@ export async function fetchThreads(replyChunks: RetrievalChunk[]): Promise<Threa
     )
   );
 
-  // Step 4: assemble ThreadContext (skip deleted posts)
+  // Step 4: assemble ThreadContext (skip deleted posts and low-quality threads)
   return results.flatMap((post) => {
     if (!post) return [];
+    if (post.threadConfidence != null && post.threadConfidence < 30) return [];
     const matchedIds = postToMatchedReplies.get(post.id) ?? new Set<string>();
     return [{
       postId: post.id,
