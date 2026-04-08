@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const CreatePostDTO = z.object({
-  title: z.string().min(3),
-  content: z.string().min(10),
+  title: z.string().trim().min(3).max(300),
+  content: z.string().trim().min(10).max(50000),
 });
 
 export const UpdatePostParmasDTO = z.object({
@@ -10,8 +10,8 @@ export const UpdatePostParmasDTO = z.object({
 });
 
 export const UpdatePostDTO = z.object({
-  title: z.string().min(3),
-  content: z.string().min(10),
+  title: z.string().trim().min(3).max(300),
+  content: z.string().trim().min(10).max(50000),
 })
 
 export const DeletePostDTO = z.object({

@@ -5,12 +5,12 @@ export const RegisterDTO = z.object({
   username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/),
   firstName: z.string().min(1).max(50).optional(),
   lastName: z.string().min(1).max(50).optional(),
-  password: z.string().min(8),
+  password: z.string().min(8).max(128),
 });
 
 export const LoginDTO = z.object({
   email: z.email(),
-  password: z.string().min(1),
+  password: z.string().min(1).max(128),
 });
 
 export interface AuthResponse {

@@ -53,6 +53,6 @@ export async function deleteReply(
   if (!existing || existing.postId !== postId) throw new Error("REPLY_NOT_FOUND");
   if (existing.userId !== requestingUserId) throw new Error("FORBIDDEN");
 
-  await prisma.reply.delete({ where: { id: replyId } });
   await enqueueReplyIngest({ type: "delete", replyId });
+  await prisma.reply.delete({ where: { id: replyId } });
 }

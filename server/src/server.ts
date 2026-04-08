@@ -7,16 +7,24 @@ import { repliesRoutes } from "./api/routes/replies.route.js";
 import { adminReviewRoutes } from "./api/routes/adminReview.routes.js";
 import jwtPlugin from "./plugins/jwt.plugin.js";
 import { env } from "./config/env.js";
+import { prisma } from "./infra/prisma.js";
 
 export async function buildServer() {
     const app = fastify({
         logger: true,
-        trustProxy: true,       // importand behind load balancers
+        trustProxy: true,
+        bodyLimit: 102400, // 100KB
     });
 
     await app.register(import("@fastify/cors"), {
         origin: env.FRONTEND_URL,
         credentials: true,
+    });
+
+    await app.register(import("@fastify/rate-limit"), {
+        global: true,
+        max: 100,
+        timeWindow: "1 minute",
     });
 
     app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -28,7 +36,7 @@ export async function buildServer() {
             });
         }
         return reply.status(500).send({
-            error: error.message,
+            error: env.NODE_ENV === "development" ? error.message : "Internal server error",
         });
     })
 
@@ -65,6 +73,7 @@ const shutdown = async (signal: string) => {
     console.log(`Received ${signal}. Shutting down...`);
     try {
         await runningServer?.close();
+        await prisma.$disconnect();
         process.exit(0);
     } catch (err) {
         console.error("Error during shutdown", err);

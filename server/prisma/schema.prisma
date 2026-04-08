@@ -13,6 +13,7 @@ model User {
   firstName String?
   lastName  String?
   username  String    @unique
+  role      String    @default("user")
   accounts  Account[]
   posts     Post[]
   replies   Reply[]

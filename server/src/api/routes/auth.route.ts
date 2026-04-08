@@ -3,7 +3,10 @@ import { registerHandler, loginHandler, meHandler } from "../controllers/auth.co
 import { authenticate } from "../middleware/authenticate.middleware.js";
 
 export function authRoutes(app: FastifyInstance): void {
-  app.post("/register", registerHandler);
-  app.post("/login", loginHandler);
+  const authRateLimit = {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+  };
+  app.post("/register", authRateLimit, registerHandler);
+  app.post("/login", authRateLimit, loginHandler);
   app.get("/me", { preHandler: authenticate }, meHandler);
 }

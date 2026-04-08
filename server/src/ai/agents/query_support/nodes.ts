@@ -193,47 +193,6 @@ export async function retrieveContextNode(
   };
 }
 
-// export async function retrieveCommunityNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-//   if (!state.query) return {};
-//   // const results = await retrieveFromNamespace(state.query, "community", 3);
-//   const chunks = await retrievalManager.retrieve(state.query, "community");
-//   return {
-//     retrievedChunks: chunks,
-//   };
-  
-// }
-// export async function retrieveMedicalNode(
-//   state: AgentStateType
-// ): Promise<Partial<AgentStateType>> {
-
-//   if (!state.query) return {};
-
-//   const chunks = await retrievalManager.retrieve(
-//     state.query,
-//     "medical"
-//   );
-
-//   return {
-//     retrievedChunks: chunks,
-//   };
-// }
-
-// export async function fanOutRetrievalNode(
-//   state: AgentStateType
-// ): Promise<Partial<AgentStateType>> {
-
-//   if (!state.query) return {};
-
-//   const chunks = await retrievalManager.retrieve(
-//     state.query,
-//     "both"
-//   );
-
-//   return {
-//     retrievedChunks: chunks,
-//   };
-// }
-
 export async function expandThreadsNode(state: AgentStateType, config: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
   const chunks = state.retrievedChunks ?? [];
   const replyChunks = chunks.filter(c => c.type === "reply");
@@ -356,6 +315,3 @@ Provide a clear, supportive response.
     };
   }
 }
-
-
-  // const result = await generateAnswer(state.query, state.communityContext, state.medicalContext)

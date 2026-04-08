@@ -1,6 +1,7 @@
 import { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { z } from "zod";
 import { authenticate } from "../middleware/authenticate.middleware.js";
+import { requireAdmin } from "../middleware/requireAdmin.middleware.js";
 import {
   listReviews,
   getReviewById,
@@ -8,9 +9,9 @@ import {
 } from "../../services/threadReview.service.js";
 
 const ListQuerySchema = z.object({
-  status: z.string().optional(),
-  importRunId: z.string().optional(),
-  publishDecision: z.string().optional(),
+  status: z.enum(["pending", "approved", "rejected"]).optional(),
+  importRunId: z.string().uuid().optional(),
+  publishDecision: z.enum(["auto_publish", "qa_review", "archive_only"]).optional(),
 });
 
 const ResolveBodySchema = z.object({
@@ -21,7 +22,7 @@ const ResolveBodySchema = z.object({
 export function adminReviewRoutes(app: FastifyInstance) {
   app.get(
     "/",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const parsed = ListQuerySchema.safeParse(req.query);
       if (!parsed.success) {
@@ -34,7 +35,7 @@ export function adminReviewRoutes(app: FastifyInstance) {
 
   app.get(
     "/:id",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { id } = req.params as { id: string };
       const review = await getReviewById(id);
@@ -45,7 +46,7 @@ export function adminReviewRoutes(app: FastifyInstance) {
 
   app.patch(
     "/:id",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, requireAdmin] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { id } = req.params as { id: string };
       const parsed = ResolveBodySchema.safeParse(req.body);

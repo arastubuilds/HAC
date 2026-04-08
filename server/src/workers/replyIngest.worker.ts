@@ -7,59 +7,45 @@ import { deleteReplyVectors, ingestText } from "../services/ingest.service.js";
 export const replyIngestWorker = new Worker<ReplyIngestJob>(
   REPLY_INGEST_QUEUE,
   async (job) => {
-    try {
-      console.log(`Reply job ${job.id ?? "unknown"} received`, job.data);
+    const { replyId, type } = job.data;
+    console.log(`Processing ${type} ingestion for reply ${replyId} (job ${job.id ?? "unknown"})`);
 
-      const { replyId, type } = job.data;
-
-      console.log(`Processing ${type} ingestion for reply ${replyId}`);
-
-      if (type === "delete") {
-        await deleteReplyVectors("community", replyId);
-        return;
-      }
-
-      const reply = await prisma.reply.findUnique({
-        where: { id: replyId },
-        include: { post: { select: { title: true } } },
-      });
-
-      if (!reply) {
-        console.warn(`Reply ${replyId} not found, cleaning vectors`);
-        await deleteReplyVectors("community", replyId);
-        return;
-      }
-
-      const text = `
-Community Reply
-
-Post: ${reply.post.title}
-
-Reply: ${reply.content}
-      `;
-
-      await ingestText(text, "community", {
-        source: "community",
-        type: "reply",
-        replyId: reply.id,
-        postId: reply.postId,
-        userId: reply.userId,
-        title: reply.post.title,
-        createdAt: reply.createdAt.toISOString(),
-        ...(reply.originPlatform   != null && { originPlatform:        reply.originPlatform }),
-        ...(reply.waThreadKey      != null && { waThreadKey:           reply.waThreadKey }),
-        ...(reply.importRunId      != null && { importRunId:           reply.importRunId }),
-        ...(reply.publishDecision  != null && { publishDecision:       reply.publishDecision }),
-        ...(reply.threadConfidence != null && { threadConfidence:      reply.threadConfidence }),
-        ...(reply.relevanceScore   != null && { medicalRelevanceScore: reply.relevanceScore }),
-        isImportedArchive: reply.originPlatform != null,
-      });
-
-      console.log(`Ingestion complete for reply ${replyId}`);
-    } catch (err) {
-      console.error("Reply ingestion failed", err);
-      throw err;
+    if (type === "delete") {
+      await deleteReplyVectors("community", replyId);
+      return;
     }
+
+    const reply = await prisma.reply.findUnique({
+      where: { id: replyId },
+      include: { post: { select: { title: true } } },
+    });
+
+    if (!reply) {
+      console.warn(`Reply ${replyId} not found — skipping ingestion`);
+      await deleteReplyVectors("community", replyId);
+      return; // permanent: don't retry
+    }
+
+    const text = `Community Reply\n\nPost: ${reply.post.title}\n\nReply: ${reply.content}`;
+
+    await ingestText(text, "community", {
+      source: "community",
+      type: "reply",
+      replyId: reply.id,
+      postId: reply.postId,
+      userId: reply.userId,
+      title: reply.post.title,
+      createdAt: reply.createdAt.toISOString(),
+      ...(reply.originPlatform   != null && { originPlatform:        reply.originPlatform }),
+      ...(reply.waThreadKey      != null && { waThreadKey:           reply.waThreadKey }),
+      ...(reply.importRunId      != null && { importRunId:           reply.importRunId }),
+      ...(reply.publishDecision  != null && { publishDecision:       reply.publishDecision }),
+      ...(reply.threadConfidence != null && { threadConfidence:      reply.threadConfidence }),
+      ...(reply.relevanceScore   != null && { medicalRelevanceScore: reply.relevanceScore }),
+      isImportedArchive: reply.originPlatform != null,
+    });
+
+    console.log(`Ingestion complete for reply ${replyId}`);
   },
   {
     connection: getRedisConnection(),

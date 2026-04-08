@@ -10,10 +10,10 @@ export async function createPost(input: CreatePostInput): Promise<Post> {
       content: input.content,
       userId: input.userId,
     },
+    include: { user: { select: { username: true } } },
   });
   await enqueuePostIngest({type: "create", postId: post.id});
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: post.userId }, select: { username: true } });
-  return { ...post, username: user.username };
+  return { ...post, username: post.user.username };
 }
 
 export async function updatePost(updates: UpdatePostInput): Promise<Post> {
@@ -30,11 +30,11 @@ export async function updatePost(updates: UpdatePostInput): Promise<Post> {
       title: updates.original.title,
       content: updates.original.content,
     },
+    include: { user: { select: { username: true } } },
   });
 
   await enqueuePostIngest({type: "update", postId: post.id});
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: post.userId }, select: { username: true } });
-  return { ...post, username: user.username };
+  return { ...post, username: post.user.username };
 }
 
 export async function getPost(postId: string): Promise<Post | null> {
@@ -67,6 +67,6 @@ export async function deletePost(input: DeletePostInput): Promise<void> {
   if (!existing) throw new Error("POST_NOT_FOUND");
   if (existing.userId !== input.requestingUserId) throw new Error("FORBIDDEN");
 
-  await prisma.post.delete({ where: { id: input.postId } });
   await enqueuePostIngest({type: "delete", postId: input.postId});
+  await prisma.post.delete({ where: { id: input.postId } });
 }

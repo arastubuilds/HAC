@@ -1322,7 +1322,7 @@ async function seedReplies(
     });
     if (existingReply) {
       stats.skippedDuplicates++;
-      await enqueueReplyIngest({ type: "create", replyId: existingReply.id }, { jobId: existingReply.id });
+      await enqueueReplyIngest({ type: "create", replyId: existingReply.id });
       continue;
     }
 
@@ -1357,7 +1357,7 @@ async function seedThread(thread: WaThread, runId: string, stats: RunStats): Pro
     // Post already exists — re-enqueue for idempotent Pinecone repair, then backfill
     // any replies missed on a prior run (e.g. partial failure after post creation).
     stats.skippedDuplicates++;
-    await enqueuePostIngest({ type: "create", postId: existing.id }, { jobId: existing.id });
+    await enqueuePostIngest({ type: "create", postId: existing.id });
     await seedReplies(thread, existing.id, runId, stats);
     return;
   }

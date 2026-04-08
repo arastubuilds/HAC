@@ -8,14 +8,17 @@ import { asNumber, asString } from "../utils/metadata.js";
 export class CommunityRetriever implements Retriever {
     async retrieve(query: string): Promise<RetrievalChunk[]> {
       const embedding = await embeddingsModel.embedQuery(query);
-  
+      return this.retrieveWithVector(embedding);
+    }
+
+    async retrieveWithVector(vector: number[]): Promise<RetrievalChunk[]> {
       const results = await pineconeIndex.query({
         namespace: "community",
-        vector: embedding,
+        vector,
         topK: 10,
         includeMetadata: true,
       });
-  
+
       return (
         results.matches.flatMap((match) => {
           const metaType = asString(match.metadata?.type);

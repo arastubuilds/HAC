@@ -2101,7 +2101,7 @@ async function seedReplies(
     });
     if (existingReply) {
       stats.skippedDuplicates++;
-      await enqueueReplyIngest({ type: "create", replyId: existingReply.id }, { jobId: existingReply.id });
+      await enqueueReplyIngest({ type: "create", replyId: existingReply.id });
       continue;
     }
 
@@ -2142,7 +2142,7 @@ async function seedThread(thread: WaThread, runId: string, publishDecision: stri
 
   if (existing) {
     stats.skippedDuplicates++;
-    await enqueuePostIngest({ type: "create", postId: existing.id }, { jobId: existing.id });
+    await enqueuePostIngest({ type: "create", postId: existing.id });
     await seedReplies(thread, existing.id, runId, publishDecision, stats);
     return;
   }

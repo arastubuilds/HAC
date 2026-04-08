@@ -41,15 +41,11 @@ export function buildContext(chunks: RetrievalChunk[]): RetrievalContext {
     const medicalSection = buildSection(medical);
     const communitySection = buildSection(community);
 
-    const context = `
-    Medical Information:
+    const sections: string[] = [];
+    if (medicalSection) sections.push(`Medical Information:\n\n${medicalSection}`);
+    if (communitySection) sections.push(`Community Information:\n\n${communitySection}`);
 
-    ${medicalSection}
-
-    Community Information:
-
-    ${communitySection}
-    `.trim();
+    const context = sections.join("\n\n").trim();
 
     return {
         context,

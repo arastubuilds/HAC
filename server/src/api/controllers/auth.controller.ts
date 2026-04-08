@@ -19,7 +19,7 @@ export async function registerHandler(req: FastifyRequest, reply: FastifyReply) 
       ...(parsed.data.lastName !== undefined && { lastName: parsed.data.lastName }),
     });
     const token = await reply.jwtSign(
-      { sub: user.id, username: user.username },
+      { sub: user.id, username: user.username, role: user.role },
       { expiresIn: "7d" },
     );
     const response: AuthResponse = {
@@ -57,7 +57,7 @@ export async function loginHandler(req: FastifyRequest, reply: FastifyReply) {
   }
 
   const token = await reply.jwtSign(
-    { sub: user.id, username: user.username },
+    { sub: user.id, username: user.username, role: user.role },
     { expiresIn: "7d" },
   );
   const response: AuthResponse = {
@@ -77,7 +77,7 @@ export async function loginHandler(req: FastifyRequest, reply: FastifyReply) {
 export async function meHandler(req: FastifyRequest, reply: FastifyReply) {
   const user = await prisma.user.findUnique({
     where: { id: req.user.sub },
-    select: { id: true, email: true, username: true, firstName: true, lastName: true, createdAt: true },
+    select: { id: true, email: true, username: true, firstName: true, lastName: true, role: true, createdAt: true },
   });
   if (!user) return reply.status(404).send({ error: "User not found" });
   return reply.status(200).send({

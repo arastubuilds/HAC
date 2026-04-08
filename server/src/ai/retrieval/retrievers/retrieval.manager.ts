@@ -1,23 +1,26 @@
 import { type RetrievalRoute, type RetrievalChunk } from "../types/retrieval.types.js";
 import { CommunityRetriever } from "./community.retriever.js";
 import { MedicalRetriever } from "./medical.retriever.js";
+import { embeddingsModel } from "../../../infra/embeddings.js";
 
 
 export class RetrievalManager {
     private communityRetriever = new CommunityRetriever();
     private medicalRetriever = new MedicalRetriever();
-  
+
     async retrieve(query: string, route: RetrievalRoute): Promise<RetrievalChunk[]> {
-  
+      // Embed once, reuse vector across retrievers
+      const vector = await embeddingsModel.embedQuery(query);
+
       if (route === "community") {
-        return this.communityRetriever.retrieve(query).catch((err: unknown) => {
+        return this.communityRetriever.retrieveWithVector(vector).catch((err: unknown) => {
           console.error("[RetrievalManager] community retriever failed:", err);
           return [] as RetrievalChunk[];
         });
       }
 
       if (route === "medical") {
-        return this.medicalRetriever.retrieve(query).catch((err: unknown) => {
+        return this.medicalRetriever.retrieveWithVector(vector).catch((err: unknown) => {
           console.error("[RetrievalManager] medical retriever failed:", err);
           return [] as RetrievalChunk[];
         });
@@ -25,11 +28,11 @@ export class RetrievalManager {
 
       // route === "both"
       const [communityResults, medicalResults] = await Promise.all([
-        this.communityRetriever.retrieve(query).catch((err: unknown) => {
+        this.communityRetriever.retrieveWithVector(vector).catch((err: unknown) => {
           console.error("[RetrievalManager] community retriever failed:", err);
           return [] as RetrievalChunk[];
         }),
-        this.medicalRetriever.retrieve(query).catch((err: unknown) => {
+        this.medicalRetriever.retrieveWithVector(vector).catch((err: unknown) => {
           console.error("[RetrievalManager] medical retriever failed:", err);
           return [] as RetrievalChunk[];
         }),

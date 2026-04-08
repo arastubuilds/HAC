@@ -9,10 +9,13 @@ import { asNumber, asString } from "../utils/metadata.js";
 export class MedicalRetriever implements Retriever {
   async retrieve(query: string): Promise<RetrievalChunk[]> {
     const embedding = await embeddingsModel.embedQuery(query);
+    return this.retrieveWithVector(embedding);
+  }
 
+  async retrieveWithVector(vector: number[]): Promise<RetrievalChunk[]> {
     const results = await pineconeIndex.query({
       namespace: "medical",
-      vector: embedding,
+      vector,
       topK: 10,
       includeMetadata: true,
     });

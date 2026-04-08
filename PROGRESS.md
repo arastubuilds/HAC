@@ -1120,3 +1120,287 @@ DELETE /api/posts/[postId]/replies/[replyId]        — delete reply
 - `deleteReply(postId, replyId)` — DELETE with ownership enforced server-side
 
 ---
+
+# 48. Chat Screen — SSE Streaming UI
+
+Added a full chat interface with real-time streaming from the AI agent.
+
+**New files:**
+
+```
+web/src/app/(main)/chat/page.tsx              — main chat page with SSE parser
+web/src/components/chat/ChatMessage.tsx        — renders user/assistant messages, citation markers as superscript
+web/src/components/chat/CitationList.tsx       — citation badges with source type, snippet previews, forum links
+web/src/components/chat/StatusIndicator.tsx    — animated stage labels with pulsing dots
+web/src/components/chat/ChatInput.tsx          — auto-expanding textarea, Enter to send
+web/src/app/api/chat/route.ts                 — BFF proxy streaming from /query with token cookie auth
+```
+
+**Chat page features:**
+
+- SSE event parser handling `status`, `token`, `done`, `error` event types
+- Token queue draining at 18ms intervals for smooth character-by-character display
+- Stage indicators mapping pipeline nodes to human-readable labels ("Reading your question…", "Retrieving context…", etc.)
+- Blinking cursor animation during streaming
+- Auto-scroll to bottom on new content
+
+---
+
+# 49. Frontend Design System Overhaul
+
+Replaced generic styling with a cohesive design system.
+
+**`web/src/app/globals.css`:**
+
+- Color palette: primary pink (`#E87EA1`), page background (`#F7F3F5`), surfaces, borders
+- Typography: **Fraunces** (serif) for display headings, **Plus Jakarta Sans** for body
+- Spacing tokens: `radius-sm` through `radius-full` (6px–9999px)
+- Shadows: card shadow, pink glow shadow
+- Animations: `shimmer` (skeleton loading), `card-enter` (staggered entrance)
+- CSS custom properties for theming (`--color-*`, `--font-*`, `--shadow-*`)
+
+**Component updates:**
+
+- `Button.tsx` — three variants (primary, outline, ghost), three sizes, loading spinner with `aria-busy`
+- `Input.tsx` — password toggle with Eye/EyeOff icons (Lucide), error state with red border
+- `Modal.tsx` — backdrop blur, click-outside-to-close, body scroll lock
+- `Navbar.tsx` — dark background (`#2D1B2E`) with backdrop blur, active link highlighting, avatar + username display, links to `/forum` and `/chat`
+
+---
+
+# 50. Threaded Reply UI
+
+Frontend reply components rebuilt to support nested threading.
+
+- `ReplyItem.tsx` — recursive rendering of child replies up to 3 levels deep, left border indent per depth, reply/delete actions
+- `ReplyList.tsx` — builds tree structure from flat reply array using `parentReplyId` relationships
+- `ReplySection.tsx` — modal-based reply form, integrates `ReplyList` + `ReplyForm`
+- `ReplyForm.tsx` — textarea with submit/cancel, sign-in prompt for unauthenticated users, optimistic mutations via React Query
+- `PostDetail.tsx` — author info with `Avatar`, owner actions (edit/delete), integrated reply section
+- `PostCard.tsx` — staggered `card-enter` animation, author avatar, content excerpt, comment count
+
+---
+
+# 51. Register Fix & `/me` Endpoint
+
+**`server/src/services/auth.service.ts`:** replaced `prisma.$transaction()` with a nested Prisma write (`accounts: { create: {...} }`), pre-generating UUID so user and account share the same ID.
+
+**New endpoint:** `GET /auth/me` — returns authenticated user's profile (`id`, `email`, `username`, `firstName`, `lastName`, `createdAt`). Wired into auth routes with `authenticate` middleware.
+
+**Frontend hydration:** `web/src/components/AuthHydrator.tsx` calls `/api/auth/me` on mount, populates Zustand auth store or clears on failure. Mounted in root `Providers` component.
+
+**Type update:** `PostResponse` in `packages/shared/src/types/api.ts` gained `username: string` field.
+
+---
+
+# 52. Replies API Delete Path Fix
+
+- Route changed from `/replies/:replyId` to `/posts/:postId/replies/:replyId` — matches nested resource convention
+- New `DeleteReplyParamDTO` validates both `postId` and `replyId` as UUID
+- `deleteReply()` service validates the reply belongs to the specified post before performing ownership check
+- `parentReplyId ?? null` added for proper Prisma null coercion
+
+---
+
+# 53. Chat/Auth Flow Hardening
+
+- `ApiClient.request()` (`packages/shared/src/lib/api.ts`): added explicit `204 No Content` check before JSON parsing — returns `undefined as T` to prevent parse errors on empty responses
+- Chat BFF route (`web/src/app/api/chat/route.ts`): upstream response validation with proper error propagation for non-2xx responses
+
+---
+
+# 54. WhatsApp Chat Ingestion Pipeline
+
+Full pipeline for ingesting WhatsApp cancer support group chats into the community knowledge base.
+
+**Entry point:** `server/src/scripts/ingestWhatsApp.v2.ts` (~2800 lines)
+
+**7-phase pipeline:**
+
+```
+1. Parse           — regex extraction of timestamp, sender, body from _chat.txt
+2. Filter Noise    — system msgs, media-only, too short, spam senders, bare URLs
+3. Classify/Score  — medical relevance, anchor likelihood, reply likelihood
+4. Pseudonymize    — SHA256-based usernames, upsert User records
+5. Thread Recon    — multi-pass thread reconstruction with LLM tie-breaking
+6. Publish Gate    — confidence scoring → auto / qa / skip decision
+7. Seed DB         — create Post + Reply records, enqueue embedding ingestion
+```
+
+**New Prisma models:**
+
+- `ImportRun` — batch metadata: source file, status, counts (parsed, dropped, created, skipped), version strings (parser, classifier, threading, embedding, LLM), failure counters
+- `MessageStaging` — per-message audit trail: raw/normalized body, scores, content type, drop reason, language (`english` | `hinglish`), parse confidence
+- `ThreadReview` — admin QA workflow: publish decision, cohesion/confidence scores, decision reasons, LLM failure counts, review status
+
+**Post/Reply model extensions:** `originPlatform`, `waMessageKey`, `waThreadKey`, `importRunId`, `relevanceScore`, `threadConfidence`, `medicalRisk`, `publishDecision`
+
+**CLI modes:** `--dry-run`, `--date DD/MM/YY`, `--week DD/MM/YY`, `--no-embed`
+
+---
+
+# 55. Message Classification & Scoring
+
+**File:** `server/src/scripts/ingestWhatsApp.v2.ts` — `classifyMessage()`
+
+Three independent score dimensions (each 0–100):
+
+| Score | Key signals |
+|---|---|
+| `medicalRelevanceScore` | Medical term density across 8 semantic categories, embedding cosine against reference topics (>0.5 = +15), side-effect bonuses, Hinglish synonym expansion |
+| `anchorLikelihoodScore` | Question words (+20), experiential patterns (+15), support-seeking (+15), authoritative sender (+15), medical category count (6–24) |
+| `replyLikelihoodScore` | Back-reference patterns (+25), short contextual replies (+15), support-seeking (+15), ack-only penalty (−10) |
+
+**Blended score:** `0.5×medical + 0.3×anchor + 0.2×reply`
+
+**Content type:** classified as `question`, `experience`, `recommendation`, `ack`, `logistics`, or `noise`
+
+**Hinglish support:** synonym mapping ("kimo" → "chemo", "dard" → "pain", etc.) with language-specific category weighting (0.65 for Hinglish vs 0.4 for English)
+
+---
+
+# 56. Thread Reconstruction Algorithm
+
+**File:** `server/src/scripts/ingestWhatsApp.v2.ts` — `reconstructThreads()`
+
+**Forward pass** maintains an active thread pool (max 5 concurrent). For each message, computes `topicOverlap()`:
+- Lexical Jaccard (or embedding cosine when available)
+- Medical category Jaccard (with related-category credit)
+- Sender bonus for anchor author (+0.12) or recent replier (+0.08)
+
+**Three decision bands:**
+
+| Band | Overlap | Action |
+|---|---|---|
+| ATTACH | ≥ 0.35 | Direct attachment |
+| SPLIT | 0.20–0.35 | LLM tie-breaker (`shouldAttachLLM()`) or heuristic fallback |
+| MIDDLE | < 0.20 | New anchor (unless open-question relaxation applies) |
+
+**Fast paths** (no LLM): direct reply (bare contextual within 5 min), authoritative reply (doctor within 30 min), category match, sender repeat, back-reference.
+
+**Post-reconstruction passes:**
+
+1. **Anchor dedup** — merges threads with same-sender anchors within 2 min if overlap ≥ 0.60
+2. **Backward pass** — reattaches unattached messages (medScore ≥ 20) to finalized threads within 6h window
+3. **Anchor correction** — prefers question anchors over experiential ones on same topic
+4. **Singleton fold-back** — single-reply experiential threads merge into matching question threads
+5. **LLM failure quarantine** — unattached LLM-failed messages get synthetic singleton threads for QA visibility
+
+**Open-question tracking:** anchors marked `openQuestion=true`, downgraded when a qualifying answer arrives (shared medical categories + medScore above threshold).
+
+---
+
+# 57. Thread Confidence & Publish Gate
+
+**Confidence formula:**
+
+```
+base = anchor×0.35 + avgReplyMed×0.25 + avgOverlap×100×0.25 + replyRatio×100×0.15
+```
+
+**Bonuses/penalties:**
+
+| Signal | Points |
+|---|---|
+| Doctor reply present | +10, +15 |
+| Question with ≥1 reply (QA bonus) | +12 |
+| Emotional cohesion (wellness vocab in anchor + 2+ replies) | +15 |
+| Multi-sender diversity (up to) | +15 |
+| Monologue (all replies from anchor sender) | −25 |
+
+**Publish confidence:** `0.7×cohesion + 0.25×medicalDepth + 0.12×anchorScore + (doctor ? 8 : 0)`
+
+**Publish gate — three outcomes:**
+
+| Decision | Condition |
+|---|---|
+| `auto` | publishConf ≥ 60, or strong standalone anchor, or medical question + substantive reply |
+| `qa` | publishConf ≥ 28, or LLM failures present, or medically meaningful content |
+| `skip` | Everything else |
+
+---
+
+# 58. Admin Review System
+
+QA workflow for reviewing WhatsApp-ingested threads before publication.
+
+**`ThreadReview` model** (`server/prisma/schema.prisma`):
+- `publishDecision` ("auto_publish" / "qa_review" / "archive_only")
+- `threadCohesionScore`, `publishConfidenceScore`
+- `decisionReasons` (string array: "llm_failure_in_attachment", "doctor_present", etc.)
+- `llmAssistedCount`, `llmFailedCount`
+- `requiresHumanReview` (true when `publishDecision = "qa_review"`)
+- `reviewStatus` ("pending" / "approved" / "rejected"), `reviewDecision`, `reviewReason`, `reviewedBy`
+
+**Server:**
+- `server/src/services/threadReview.service.ts` — list pending, get by ID, resolve (approve/reject with reason)
+- `server/src/api/routes/adminReview.routes.ts` — `GET /admin/reviews`, `GET /admin/reviews/:id`, `PATCH /admin/reviews/:id`
+- `enrichReviews()` — fetches anchor message preview (sender pseudonym, timestamp, body) from `MessageStaging` and candidate thread (post + 6 recent replies)
+
+**Frontend:**
+- `web/src/app/(main)/admin/reviews/page.tsx` — review queue table with cohesion/confidence scores, decision reasons, LLM failure indicators
+- `ReviewPreviewModal.tsx` — anchor message + candidate thread preview
+- `ReviewActions.tsx` — approve/reject with required reason textarea
+
+---
+
+# 59. Embedding Benchmark & Evaluation Tooling
+
+**`server/src/scripts/benchmarkEmbeddings.ts`:**
+- Compares 4 models: e5-base-v2 (current), embeddinggemma-300m, bge-m3, all-MiniLM-L6-v2
+- 8 WhatsApp message pairs (similar/dissimilar)
+- Metric: GAP (avg similar cosine − avg dissimilar cosine; higher = better separation)
+
+**`server/src/scripts/eval/`:**
+- `benchmarkIngestion.ts` — end-to-end test suite with F1 thresholds: classification (≥0.80), threading precision (≥0.75), publish accuracy (≥0.85)
+- `compareThreading.ts` — side-by-side v1 vs v2 diff: parsed msgs, dropped, thread counts, auto/qa/skip buckets, depth distribution
+- `generateFixtures.ts` — creates labeled JSONL test sets
+- `fixtures/` — 3 JSONL files (classification, threading, publish)
+
+---
+
+# 60. Threading Improvements (v3.1 → v3.5)
+
+Iterative refinements to the thread reconstruction algorithm across 4 commits.
+
+**v3.1** — over-merging fixes, lazy queue imports (prevents Redis dependency during dry-runs), LLM decision logging to JSONL artifacts
+
+**v3.4.0** — Q&A cohesion bonus (+12 for question + reply), open-question window extension (up to 18h for unanswered high-value questions), monologue suppression (−25 penalty), dry-run artifact output for debugging
+
+**v3.5.0** — wellness vocabulary for emotional cohesion scoring, larger active thread pool, 6h backward window (up from shorter default), authoritative sender detection (doctor/nurse patterns), cross-date overlap scoring, ranker widening for borderline threads
+
+**Anchor classification fix** — back-references ("I also had", "same here") blocked from becoming anchors (they are reply signals, not conversation starters); substantive content gate requires minimum medical term presence for anchor eligibility
+
+---
+
+# 61. Production Hardening — Security, Reliability & Code Quality
+
+Comprehensive audit-driven fixes across the server codebase.
+
+**Security (P0):**
+
+- Admin authorization: added `role` field to User model (default `"user"`), included in JWT payload, created `requireAdmin` middleware, wired into all `/admin/reviews` routes
+- SSE CORS: replaced `Access-Control-Allow-Origin: *` with `env.FRONTEND_URL` on the hijacked SSE response
+- Rate limiting: installed `@fastify/rate-limit` — global 100/min, auth 5/min, query 20/min
+- Body size limits: `bodyLimit: 100KB` on Fastify, `.max()` and `.trim()` on all Zod DTOs
+- Deterministic job IDs: `${entityId}:${type}` on both queues, preventing duplicate processing on retry
+- Failed job retention: `removeOnFail: { count: 100, age: 86400 }` replacing unbounded accumulation
+- Error handler: 500 responses no longer leak `error.message` in production
+
+**Reliability (P1):**
+
+- Graceful shutdown: server disconnects Prisma on SIGTERM/SIGINT; workers close BullMQ, Prisma, and Redis
+- Worker error classification: fetch record before deleting vectors on update; bail permanently on "not found" instead of retrying 5 times
+- Delete ordering: queue cleanup job enqueued *before* Postgres delete so record survives queue failures
+- LLM config: `maxRetries: 2` on ChatGoogle
+- Single-embed: `RetrievalManager` embeds query once and passes vector to both retrievers via `retrieveWithVector()`
+
+**Code quality (P2):**
+
+- Deleted ~40 lines of commented-out dead code from `nodes.ts`, `pinecone.ts`, `embeddings.ts`, `ingest.service.ts`
+- `createPost`/`updatePost` use Prisma `include` (1 query) instead of separate `findUniqueOrThrow` (2 queries)
+- `IngestMetadata.source` and `.type` use literal unions instead of `string`
+- Context builder omits empty Medical/Community section headers
+- Admin review DTOs use Zod enums for `status` and `publishDecision`
+
+---

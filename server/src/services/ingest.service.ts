@@ -1,16 +1,14 @@
 import { pineconeIndex } from "../infra/pinecone.js";
 import { embeddingsModel } from "../infra/embeddings.js";
 import { splitter } from "../infra/embeddings.js";
-// import { v4 as uuidv4 } from "uuid";
-
 interface IngestMetadata {
-  source: string;
+  source: "community" | "medical";
   postId?: string;
   replyId?: string;
   userId?: string;
   title?: string;
   createdAt?: string;
-  type?: string;
+  type?: "post" | "reply";
   originPlatform?: string;
   waThreadKey?: string;
   importRunId?: string;

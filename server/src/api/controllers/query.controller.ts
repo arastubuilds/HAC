@@ -4,6 +4,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { QueryRequestDTO } from "../dtos/query.dto.js";
 import { cancerSupportAgent } from "../../ai/agents/query_support/graph.js";
 import { type AgentStateType } from "../../ai/agents/query_support/state.js";
+import { env } from "../../config/env.js";
 
 export async function queryHandler(req: FastifyRequest, reply: FastifyReply) {
   const parsed = QueryRequestDTO.safeParse(req.body);
@@ -21,7 +22,8 @@ export async function queryHandler(req: FastifyRequest, reply: FastifyReply) {
   raw.setHeader("Content-Type", "text/event-stream");
   raw.setHeader("Cache-Control", "no-cache");
   raw.setHeader("Connection", "keep-alive");
-  raw.setHeader("Access-Control-Allow-Origin", "*");
+  raw.setHeader("Access-Control-Allow-Origin", env.FRONTEND_URL);
+  raw.setHeader("Access-Control-Allow-Credentials", "true");
   raw.flushHeaders();
 
   let aborted = false;

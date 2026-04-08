@@ -2,7 +2,7 @@ import { z } from "zod";
 import { type Citation } from "../../ai/retrieval/types/citation.types.js";
 
 export const QueryRequestDTO = z.object({
-  message: z.string().min(1),
+  message: z.string().trim().min(1).max(2000),
 });
 
 export interface TokenEvent { type: "token"; content: string }
