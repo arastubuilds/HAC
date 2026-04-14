@@ -71,6 +71,7 @@ function toReplyResponse(r: Reply): ReplyResponse {
     id: r.id,
     postId: r.postId,
     userId: r.userId,
+    username: r.username,
     ...(r.parentReplyId != null ? { parentReplyId: r.parentReplyId } : {}),
     content: r.content,
     createdAt: r.createdAt.toISOString(),

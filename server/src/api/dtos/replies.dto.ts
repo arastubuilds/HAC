@@ -22,6 +22,7 @@ export interface ReplyResponse {
   id: string;
   postId: string;
   userId: string;
+  username: string;
   parentReplyId?: string;
   content: string;
   createdAt: string;

@@ -16,12 +16,13 @@ export async function createReply(
     if (!parent || parent.postId !== postId) throw new Error("PARENT_REPLY_NOT_FOUND");
   }
 
-  const reply = await prisma.reply.create({
+  const created = await prisma.reply.create({
     data: { postId, userId, content, parentReplyId: parentReplyId ?? null },
+    include: { user: { select: { username: true } } },
   });
 
-  await enqueueReplyIngest({ type: "create", replyId: reply.id });
-  return reply;
+  await enqueueReplyIngest({ type: "create", replyId: created.id });
+  return { ...created, username: created.user.username };
 }
 
 export async function listReplies(
@@ -29,15 +30,17 @@ export async function listReplies(
   page: number,
   limit: number
 ): Promise<{ replies: Reply[]; total: number }> {
-  const [replies, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.reply.findMany({
       where: { postId },
       orderBy: { createdAt: "asc" },
       skip: (page - 1) * limit,
       take: limit,
+      include: { user: { select: { username: true } } },
     }),
     prisma.reply.count({ where: { postId } }),
   ]);
+  const replies = rows.map((r) => ({ ...r, username: r.user.username }));
   return { replies, total };
 }
 
