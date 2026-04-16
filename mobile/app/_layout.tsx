@@ -45,15 +45,17 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError, status]);
 
-  // Route protection — runs after hydration settles
+  // Route protection — runs after hydration settles.
+  // setTimeout defers the replace until after the current render cycle so
+  // nested navigators ((app) tabs, (auth) stack) have time to register.
   useEffect(() => {
     if (status === "loading") return;
     const inAuthGroup = segments[0] === "(auth)";
     const inAppGroup = segments[0] === "(app)";
     if (status === "unauthenticated" && !inAuthGroup) {
-      router.replace("/(auth)/login");
+      setTimeout(() => router.replace("/(auth)/login"), 0);
     } else if (status === "authenticated" && !inAppGroup) {
-      router.replace("/(app)/forum");
+      setTimeout(() => router.replace("/(app)/forum"), 0);
     }
   }, [status, segments, router]);
 

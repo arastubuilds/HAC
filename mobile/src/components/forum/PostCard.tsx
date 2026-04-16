@@ -21,7 +21,7 @@ interface PostCardProps {
 
 export function PostCard({ post }: PostCardProps) {
   const router = useRouter();
-  const displayName = post.username ?? post.userId.slice(0, 8);
+  const displayName = post.username.slice(0, 15) ?? post.userId.slice(0, 8);
 
   return (
     <Pressable
@@ -39,7 +39,7 @@ export function PostCard({ post }: PostCardProps) {
       </Text>
       <View className="flex-row items-center justify-between">
         <View className="flex-row items-center gap-2">
-          <Avatar name={displayName} size="sm" />
+          <Avatar username={displayName} size="sm" />
           <Text className="font-body-semibold text-neutral-700 text-xs">{displayName}</Text>
         </View>
         <Text className="font-body text-neutral-400 text-xs">

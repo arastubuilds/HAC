@@ -42,6 +42,11 @@ export default function AppLayout() {
         name="chat"
         options={{
           title: "Chat",
+          headerShown: true,
+          headerStyle: { backgroundColor: "#FFFFFF" },
+          headerTintColor: "#E87EA1",
+          headerTitleStyle: { fontFamily: "PlusJakartaSans_600SemiBold" },
+          headerShadowVisible: false,
           tabBarIcon: tabIcon("flash", "flash-outline"),
         }}
       />

@@ -24,7 +24,7 @@ interface ReplyItemProps {
 }
 
 export function ReplyItem({ reply, currentUserId, onReply, onDelete }: ReplyItemProps) {
-  const displayName = reply.username ?? reply.userId.slice(0, 8);
+  const displayName = reply.username.slice(0, 15) ?? reply.userId.slice(0, 8);
   const isOwner = currentUserId === reply.userId;
   const indent = Math.min(reply.depth, MAX_DEPTH) * 16;
 
@@ -35,7 +35,7 @@ export function ReplyItem({ reply, currentUserId, onReply, onDelete }: ReplyItem
       )}
       <View className="bg-white border border-neutral-200 rounded-xl p-3">
         <View className="flex-row items-center gap-2 mb-2">
-          <Avatar name={displayName} size="sm" />
+          <Avatar username={displayName} size="sm" />
           <Text className="font-body-semibold text-neutral-700 text-xs flex-1">
             {displayName}
           </Text>
